@@ -398,7 +398,7 @@ reports their absence as a warning, so the lock is usable now.
 | Input | Needed for | Current state |
 |---|---|---|
 | Telemetry destination | shipping telemetry | Local spool and `file` sink work; `keel telemetry ship` writes a local bundle only. |
-| Org standards PDFs | migrating org rules to packs | Pack format, loader and gate runner are complete; only the two reference packs ship. |
+| Org standards PDFs | migrating org rules to packs | Pack format, loader and gate runner are complete; only the three reference packs ship. |
 | Component MCP server schema | M7 (UI bridge) | Not started. No speculative client was written. |
 
 ---

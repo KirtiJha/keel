@@ -70,7 +70,7 @@ semver.
 - **Telemetry destination.** The local JSONL spool and `file` sink work.
   `keel telemetry ship` writes a local bundle and says the real sink is missing.
 - **Org standards PDFs.** The pack format, loader, and gate runner are complete;
-  only the two reference packs ship. Migrating the PDFs needs the PDFs.
+  only the three reference packs ship. Migrating the PDFs needs the PDFs.
 - **Component MCP server schema.** M7 (UI bridge) is not started. No speculative
   client was written.
 - **Internal mirrors** for the two installed dependencies. Reported by
