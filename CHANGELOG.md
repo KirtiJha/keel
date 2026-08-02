@@ -32,6 +32,18 @@ semver.
   map. Recorded for provenance; identification is unconfirmed and flagged in
   the lock file.
 - CI jobs for the mutation gate, the spec-discipline gate and delta attachment.
+- **Effort by track is applied, not just computed.** `keel route --apply-effort`
+  writes `effortLevel` to `.claude/settings.local.json` — local scope, because
+  the level follows *this* change's track and committing it would pin the team.
+- **`keel upstream status|install`.** Verifies pinned versions against what is
+  actually in `node_modules`, and runs the `install:` commands recorded in
+  `upstream.lock` — commands a human wrote, never composed from guesses.
+  `keel init` reports drift unless `--no-install`.
+- **`src/shared/settings.ts`**, one place for merging Claude Code settings:
+  merge never replace, never reverse a deliberate value, never overwrite a file
+  that will not parse.
+- `skillOverrides` wiring for `upstream.disabled_skills`, with the plugin-skill
+  limitation reported rather than papered over.
 
 ### Changed
 

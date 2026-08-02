@@ -39,6 +39,10 @@ way. Hooks run on every track; the review chain runs on standard and full.
 | **standard** | multi-file, or an exported signature changed | plan → build (test-first) → verify |
 | **full** | migrations, auth, openapi, or a widely-called symbol crossing a package boundary | proposal → plan → build → verify → archive |
 
+Reasoning effort follows the track — quick → `low`, standard → `medium`,
+full → `high`. `keel route --apply-effort` writes it to
+`.claude/settings.local.json`; per-turn overrides are Claude Code's own.
+
 **A quick change must feel like no process at all.** If a two-line fix feels
 slower with Keel than without it, the router is wrong — that is a bug, not a
 tuning exercise.
@@ -64,6 +68,7 @@ keel gotchas   # review gotcha candidates; nothing is written unconfirmed
 keel spec      # full-track spec discipline: size cap, delta, archive gate
 keel mutate    # diff-only mutation testing, gated on score
 keel review    # assemble the review chain's input
+keel upstream  # verify or install the pinned upstream set
 ```
 
 ---
@@ -358,6 +363,12 @@ fails if the committed bundles differ from a fresh build.
 
 ## Upstream
 
+```bash
+keel upstream status              # what is pinned vs what is installed
+keel upstream install             # run the recorded install commands
+keel upstream install --dry-run   # show them without running them
+```
+
 Pinned in `upstream.lock`, resolved 2026-08-02 and checked for mutual
 compatibility. `keel check` rejects any moving version (`latest`, `main`,
 `^1.2.0`) and cross-checks every declared phase against the ownership map.
@@ -402,8 +413,7 @@ Called out plainly rather than left to be discovered.
 | **Org standards packs** | Blocked on the PDFs. The pack format, loader and gate runner are complete and three reference packs ship as templates — one per mode. |
 | **A `guide`-mode reference pack** | Guide packs encode org-specific judgment, which is exactly what the PDFs carry. The format is documented in the `keel-standards` skill and covered by tests; inventing an org convention to have an example would be inventing policy. |
 | **Integration TDD (`outer_loop`)** | Deferred by the plan, not by us. The config carries `outer_loop: false` and honours it; turning it on later is one config line plus a standards pack. |
-| **Automatic upstream install** | `keel init` writes the environment and records the pins; it does not run `npm install` or add a plugin marketplace on someone's behalf. |
-| **Skill enable/disable wiring** | `upstream.enabled_skills` is recorded and reported, but not yet written into Claude Code settings — the settings key for toggling individual skills is unconfirmed, and guessing one would silently do nothing. |
+| **Per-skill subsetting of Superpowers** | Not possible from settings. `skillOverrides` exists and Keel writes it, but Claude Code documents that it **does not affect plugin skills** — and Superpowers ships as a plugin. Its skills are managed whole-plugin through `/plugin`. This is a platform boundary, not a Keel gap, and `keel init` says so rather than writing settings that quietly do nothing. |
 
 ## Open questions for the org
 

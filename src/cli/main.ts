@@ -15,6 +15,7 @@ import { recordReview, review } from "./commands/review.js";
 import { route } from "./commands/route.js";
 import { spec } from "./commands/spec.js";
 import { telemetry } from "./commands/telemetry.js";
+import { upstream } from "./commands/upstream.js";
 import { bold, dim, fail, line } from "./output.js";
 
 const USAGE = `
@@ -32,6 +33,8 @@ ${bold("Commands")}
                        full-track spec discipline: size cap, delta, archive gate
   mutate               diff-only mutation testing, gated on score
   review [record]      assemble the review chain's input
+  upstream [status|install]
+                       verify or install the pinned upstream set
   gotchas              review and confirm gotcha candidates
   telemetry [show|ship|clear]
   version              print the plugin version
@@ -48,6 +51,9 @@ ${bold("Options")}
   --default-branch     treat this run as the default branch (spec check, CI)
   --report             report without failing (mutate)
   --prompt             emit only the assembled prompt (review)
+  --apply-effort       write the track's effort to settings.local.json (route)
+  --no-install         skip installing the upstream set (init)
+  --dry-run            show what would run without running it (upstream install)
 
 ${dim("Docs: README.md")}
 `;
@@ -65,7 +71,12 @@ async function main(): Promise<number> {
 
   switch (args.command) {
     case "init":
-      return init({ repoRoot, pluginRoot: plugin, force: flagBool(args, "force") });
+      return init({
+        repoRoot,
+        pluginRoot: plugin,
+        force: flagBool(args, "force"),
+        install: !flagBool(args, "no-install"),
+      });
 
     case "check":
       return check(repoRoot, plugin);
@@ -85,6 +96,7 @@ async function main(): Promise<number> {
         against: flagString(args, "against"),
         override: parseTrack(requested),
         json: flagBool(args, "json"),
+        applyEffort: flagBool(args, "apply-effort"),
       });
     }
 
@@ -151,6 +163,14 @@ async function main(): Promise<number> {
         repoRoot,
         pluginRoot: plugin,
         listOnly: flagBool(args, "list"),
+      });
+
+    case "upstream":
+      return upstream({
+        repoRoot,
+        subcommand: args.subcommand,
+        dryRun: flagBool(args, "dry-run"),
+        json: flagBool(args, "json"),
       });
 
     case "telemetry":

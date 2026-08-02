@@ -8,6 +8,8 @@ import { detectLanguages } from "../../context/commands.js";
 import { writeClaudeMd } from "../../context/claudemd.js";
 import { scanGotchas, type GotchaCandidate } from "../../context/gotchas.js";
 import { loadPacks } from "../../standards/loader.js";
+import { mergeObjectKey, updateSettings } from "../../shared/settings.js";
+import { applySkillSubset, hasInstallableUpstream, upstreamInstallWarnings } from "./upstream.js";
 import { detail, heading, info, line, ok, warn } from "../output.js";
 
 /**
@@ -24,6 +26,8 @@ export interface InitOptions {
   /** Gotchas a human confirmed. The scanner never writes unreviewed entries. */
   readonly confirmedGotchas?: readonly GotchaCandidate[];
   readonly force?: boolean;
+  /** Install the pinned upstream set. Default true; `--no-install` skips it. */
+  readonly install?: boolean;
 }
 
 const GITIGNORE_ENTRY = ".keel/";
@@ -153,49 +157,11 @@ const KEEL_ENV: Readonly<Record<string, string>> = {
   SUPERPOWERS_DISABLE_TELEMETRY: "1",
 };
 
-function writeSettingsEnv(root: string): "created" | "updated" | "unchanged" {
-  const dir = join(root, ".claude");
-  const path = join(dir, "settings.json");
-
-  let settings: Record<string, unknown> = {};
-  let existed = false;
-  if (isFile(path)) {
-    existed = true;
-    try {
-      const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        settings = parsed as Record<string, unknown>;
-      }
-    } catch {
-      // A settings.json we cannot parse is a file we must not overwrite.
-      return "unchanged";
-    }
-  }
-
-  const currentEnv = settings["env"];
-  const env: Record<string, unknown> =
-    typeof currentEnv === "object" && currentEnv !== null && !Array.isArray(currentEnv)
-      ? { ...(currentEnv as Record<string, unknown>) }
-      : {};
-
-  let changed = false;
-  for (const [key, value] of Object.entries(KEEL_ENV)) {
-    if (env[key] === undefined) {
-      env[key] = value;
-      changed = true;
-    }
-  }
-
-  if (!changed) return "unchanged";
-
-  try {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(path, `${JSON.stringify({ ...settings, env }, null, 2)}\n`, "utf8");
-  } catch {
-    return "unchanged";
-  }
-
-  return existed ? "updated" : "created";
+function writeSettingsEnv(root: string): string {
+  const written = updateSettings(root, "project", (current) =>
+    mergeObjectKey(current, "env", KEEL_ENV),
+  );
+  return written.ok ? written.value : "unchanged";
 }
 
 function writeSchema(root: string): void {
@@ -255,6 +221,9 @@ export function init(options: InitOptions): number {
   if (settings === "unchanged") info(".claude/settings.json already has Keel's environment");
   else ok(`.claude/settings.json ${settings} (SUPERPOWERS_DISABLE_TELEMETRY=1)`);
 
+  // ---- skill subset (M2.4) ----
+  for (const note of applySkillSubset(repoRoot)) info(note);
+
   // ---- subagents needing privileged frontmatter ----
   const agents = installAgents(repoRoot, pluginRoot);
   if (agents.length > 0) ok(`installed ${agents.length} agent(s) to .claude/agents/`);
@@ -274,6 +243,18 @@ export function init(options: InitOptions): number {
       detail(candidate.evidence);
     }
     if (candidates.length > 5) info(`…and ${candidates.length - 5} more`);
+  }
+
+  // ---- upstream (M2.2) ----
+  if (options.install !== false && hasInstallableUpstream(repoRoot)) {
+    heading("Upstream");
+    const warnings = upstreamInstallWarnings(repoRoot);
+    if (warnings.length === 0) {
+      ok("pinned set already installed");
+    } else {
+      for (const text of warnings) info(text);
+      detail("run `keel upstream install` to bring them to their pins");
+    }
   }
 
   heading("Next");

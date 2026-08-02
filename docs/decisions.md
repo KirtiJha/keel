@@ -314,4 +314,60 @@ maintainer (UI bridge, PDF migration) and one deferred by the plan itself.
 | `guide`-mode reference pack | None ships. A guide encodes org-specific judgment — the PDFs' content. Format is documented and tested; inventing one would be inventing policy. |
 | Pilot repos, named owner, per-team champion | Organisational, not code. |
 | Managed Code Review configuration | The recommendation is written (README, "managed vs plugin settings"); the decision is the org's, as M9.4 requires. |
-| Skill enable/disable wiring | Recorded in config and reported by `keel check`, not written into Claude Code settings — the key for toggling individual skills is unconfirmed, and a guessed key would silently do nothing. |
+| Skill enable/disable wiring | Partly impossible. See §14. |
+
+
+---
+
+## 14. Superpowers' skills cannot be subset from settings
+
+**Plan / build spec M2.4:** enable a subset of Superpowers' skills, "leave the
+rest disabled by default, listed in config so teams can opt in". The acceptance
+criterion is "disabling a skill in config actually removes it from the session".
+
+**What the platform provides:** a `skillOverrides` setting mapping skill name to
+`"on" | "name-only" | "user-invocable-only" | "off"`.
+
+**Why that does not finish the job:** the documentation is explicit —
+*"Plugin skills are not affected by `skillOverrides`. Manage those through
+`/plugin` instead."* Superpowers ships as a plugin, so its skills are plugin
+skills. There is no per-skill toggle for them; a plugin is enabled or disabled
+whole.
+
+**Decided:** write `skillOverrides` for the skills it *can* control, and say
+plainly that the rest is not a setting. `keel init` prints the limitation and
+points at `/plugin`.
+
+The alternative — writing `skillOverrides` entries for Superpowers' skills
+anyway — would produce a config that looks correct, passes review, and does
+nothing. A gate that silently no-ops is worse than an absent one, because
+nobody goes looking for it.
+
+**M2.4's acceptance criterion therefore cannot be met as written** for
+plugin-sourced skills. Recorded here rather than quietly marked done.
+
+---
+
+## 15. Effort is written to local scope, and only when asked
+
+**Plan:** "Effort by track. Quick → low. Standard → medium. Full → high. Routed
+by the router, overridable per turn."
+
+**Mechanism:** `effortLevel` in settings.json, accepting
+`low | medium | high | xhigh`.
+
+**Two decisions on top of it:**
+
+1. **Local scope, not project.** The level follows *this change's* track, which
+   is a per-developer, per-branch fact. Writing it to the shared
+   `.claude/settings.json` would pin the whole team to whatever track the last
+   person to run `keel route` happened to be on.
+
+2. **Behind `--apply-effort`, not automatic.** `keel route` is otherwise a read:
+   it answers a question and changes nothing. Having it silently rewrite
+   settings as a side effect is the kind of surprise that makes people stop
+   trusting a tool. The flag is one word and the output says so when it is
+   absent.
+
+"Overridable per turn" is Claude Code's own — Keel sets the default for the
+track and gets out of the way.

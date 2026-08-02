@@ -40,8 +40,17 @@ const DependencySchema = z
     version: z.string().min(1),
     source: z.string().min(1),
     role: z.enum(ROLES).default("install"),
-    /** How it is installed. Documentation, not executed. */
+    /** How it is installed. Run verbatim by `keel upstream install`. */
     install: z.string().optional(),
+    /**
+     * The marketplace's own declared name, for plugin-kind dependencies.
+     *
+     * Required before Keel will write an `extraKnownMarketplaces` entry: the
+     * key of that map *is* the marketplace's name and must match the one in its
+     * `marketplace.json`. Left unset, the marketplace is added by the recorded
+     * `install:` command instead and nothing is guessed.
+     */
+    marketplace_name: z.string().optional(),
     /** Internal mirror, per "pin upstream versions, mirror internally". */
     mirror: z.string().optional(),
     /** Phases this dependency owns; cross-checked against PHASE_OWNERS. */
