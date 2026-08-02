@@ -175,10 +175,56 @@ Build spec §5.4 asks for this explicitly.
 
 | Tempting | Done instead |
 |---|---|
-| Invent Superpowers/OpenSpec version numbers | `upstream.lock` ships `UNPINNED`; `keel check` fails on it and names the fix. The unpinned state is implemented behaviour, not a placeholder. |
+| Invent Superpowers/OpenSpec version numbers | Shipped `UNPINNED` until a human supplied them, with `keel check` failing and naming the fix. Now resolved from the real registries — see §9. |
 | Write a speculative component-MCP client for M7 | Nothing. M7 is not started. §1 says do not write against a guessed schema. |
 | Fabricate 30 "real diffs from this repo's history" for M3 | A 35-case fixture suite that builds a real temp git repo, applies real diffs, and runs the real collector. It found three genuine bugs. |
 | Hand-write plausible gotchas for CLAUDE.md | The scanner proposes; `keel gotchas` requires per-item confirmation; nothing unconfirmed is ever written. |
 | Ship a `mode: review` reference pack for symmetry | None ships. Review mode is implemented and tested, but neither reference pack is naturally a rubric, and inventing one would be a placeholder. |
 | Mock the Python side in TypeScript tests | Real subprocesses throughout, in both directions. |
 | Assert `expect(x).toBeDefined()` where behaviour was awkward to check | Real assertions. The one place tempted — the router's caller counting — got a real fixture repo with seven real callers instead. |
+
+
+---
+
+## 9. Spec Kit is pinned but not installed
+
+**Asked for:** "take the latest superpowers/openspec/speckit versions if
+compatible."
+
+**Resolved from the real sources** (2026-08-02):
+
+| Upstream | Version | Where from |
+|---|---|---|
+| Superpowers | `6.2.0` | `obra/superpowers` tags feed, released 2026-07-24 |
+| OpenSpec | `1.7.0` | npm `@fission-ai/openspec` — note the scope; bare `openspec` on npm is an unrelated `0.0.0` placeholder |
+| Spec Kit | `0.15.1` | `github/spec-kit` releases, 2026-07-31 |
+
+**Two compatibility findings, both acted on:**
+
+1. **OpenSpec requires `node >=20.19.0`.** This repo declared `>=20`, under which
+   an install on Node 20.0 succeeds and then fails at runtime. `engines.node`
+   was raised to match.
+
+2. **Spec Kit cannot be installed alongside the other two.** Its
+   `/speckit.specify` and `/speckit.plan` own *design* and *planning* — the
+   phases the plan assigns to OpenSpec and Superpowers. Installing all three
+   puts two owners on both phases, which is the failure rule 7 exists to prevent
+   and which `keel check` now detects.
+
+   This is not a workaround. The plan is explicit that Spec Kit contributes
+   **"Two ideas only: the 'constitution' concept (kept tiny) and the
+   extension/preset pattern we copy for standards packs."** It was never meant
+   to be an installed workflow tool.
+
+**Decided:** a `role` field on each lock entry. `install` means Keel installs it
+and it owns phases; `pattern-source` means we borrowed ideas and install
+nothing. Spec Kit is pinned as a pattern source so the borrowed ideas stay
+traceable to a version, and a pattern source that declares `owns:` is an error.
+
+**Also completed while here:** the `owns`-versus-`PHASE_OWNERS` cross-check that
+M2.3 asks for, which the first pass declared but never wired up. Two
+dependencies claiming one phase now fails `keel check` and names both.
+
+**Still outstanding:** internal mirrors for the two installed dependencies.
+Reported as a warning rather than an error, because the lock is usable without
+them and blocking on a mirror nobody has set up yet would help no one.

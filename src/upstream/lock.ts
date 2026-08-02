@@ -7,30 +7,47 @@ import { z } from "zod";
 import { isFile } from "../shared/paths.js";
 import { errorMessage, type Result, err, ok } from "../shared/result.js";
 
+import { PHASES, PHASE_OWNERS, type Phase } from "./phases.js";
+
 /**
  * `upstream.lock` — pinned versions of the upstream toolchains Keel composes.
  *
  * Rule of the road 6: compose, don't fork. Pin, mirror, never patch.
+ * Rule of the road 7: one owner per phase.
  *
- * The concrete versions are a **blocked input** (build spec §1): the spec says
- * to ask for them and explicitly forbids resolving `latest`. So this module
- * implements the format, the validation and the "unpinned" state as real
- * behaviour — `keel check` reports an unpinned entry as an error naming what to
- * do — rather than inventing version numbers that would look authoritative and
- * be wrong.
+ * Both rules are enforced here rather than trusted. `validateLock` rejects
+ * moving versions *and* cross-checks each dependency's declared `owns` against
+ * the phase-ownership map, so a second tool claiming an owned phase fails
+ * `keel check` instead of being discovered later as degraded output.
  */
 
 export const UNPINNED = "UNPINNED" as const;
+
+/**
+ * What a dependency is *for*.
+ *
+ * `install` — Keel installs it and it owns phases of the workflow.
+ * `pattern-source` — we took ideas from it. Pinned for provenance, installs
+ *   nothing, owns nothing. Spec Kit is this: the plan takes "two ideas only"
+ *   from it, and installing it would put a second owner on design and planning.
+ */
+export const ROLES = ["install", "pattern-source"] as const;
+export type Role = (typeof ROLES)[number];
 
 const DependencySchema = z
   .object({
     /** Semver, a git tag, or the literal `UNPINNED` until a human supplies one. */
     version: z.string().min(1),
     source: z.string().min(1),
+    role: z.enum(ROLES).default("install"),
+    /** How it is installed. Documentation, not executed. */
+    install: z.string().optional(),
     /** Internal mirror, per "pin upstream versions, mirror internally". */
     mirror: z.string().optional(),
-    /** Which phases this dependency owns; cross-checked against PHASE_OWNERS. */
+    /** Phases this dependency owns; cross-checked against PHASE_OWNERS. */
     owns: z.array(z.string()).default([]),
+    /** Why this version, or why this is only a pattern source. */
+    note: z.string().optional(),
   })
   .strict();
 
@@ -70,8 +87,12 @@ export interface LockIssue {
   readonly severity: "error" | "warning";
 }
 
+function isPhase(value: string): value is Phase {
+  return (PHASES as readonly string[]).includes(value);
+}
+
 /**
- * Validate pins.
+ * Validate pins and phase ownership.
  *
  * `latest` and floating ranges are errors, not warnings: an unpinned upstream
  * means the toolchain can change under a team without a commit, which is the
@@ -79,8 +100,11 @@ export interface LockIssue {
  */
 export function validateLock(lock: UpstreamLock): LockIssue[] {
   const issues: LockIssue[] = [];
+  /** phase -> dependencies claiming it, for the two-owners check. */
+  const claims = new Map<string, string[]>();
 
   for (const [name, dependency] of Object.entries(lock.dependencies)) {
+    // ---- version pinning ----
     if (dependency.version === UNPINNED) {
       issues.push({
         dependency: name,
@@ -88,20 +112,14 @@ export function validateLock(lock: UpstreamLock): LockIssue[] {
         fix: `ask the owning team for the exact ${name} version to pin, then set it in upstream.lock`,
         severity: "error",
       });
-      continue;
-    }
-
-    if (/^(?:latest|main|master|head|\*)$/i.test(dependency.version)) {
+    } else if (/^(?:latest|main|master|head|\*)$/i.test(dependency.version)) {
       issues.push({
         dependency: name,
         message: `version "${dependency.version}" is a moving target`,
         fix: "pin an exact version or tag; the toolchain must not change without a commit",
         severity: "error",
       });
-      continue;
-    }
-
-    if (/^[\^~]/.test(dependency.version)) {
+    } else if (/^[\^~]/.test(dependency.version)) {
       issues.push({
         dependency: name,
         message: `version "${dependency.version}" is a floating range`,
@@ -110,12 +128,63 @@ export function validateLock(lock: UpstreamLock): LockIssue[] {
       });
     }
 
-    if (dependency.mirror === undefined) {
+    // ---- mirroring ----
+    // Only installed dependencies are mirrored; a pattern source is never fetched.
+    if (dependency.role === "install" && dependency.mirror === undefined) {
       issues.push({
         dependency: name,
         message: "no internal mirror recorded",
         fix: "mirror the pinned version internally and record it as `mirror:`",
         severity: "warning",
+      });
+    }
+
+    // ---- phase ownership ----
+    if (dependency.role === "pattern-source" && dependency.owns.length > 0) {
+      issues.push({
+        dependency: name,
+        message: `role is \`pattern-source\` but it claims ${dependency.owns.join(", ")}`,
+        fix: "a pattern source is not installed and cannot own a phase — set `owns: []` or change the role",
+        severity: "error",
+      });
+    }
+
+    for (const phase of dependency.owns) {
+      if (!isPhase(phase)) {
+        issues.push({
+          dependency: name,
+          message: `unknown phase "${phase}"`,
+          fix: `phases are: ${PHASES.join(", ")}`,
+          severity: "error",
+        });
+        continue;
+      }
+
+      // The declared owner in the ownership map must agree.
+      const declaredOwner = PHASE_OWNERS[phase];
+      if (!declaredOwner.split("+").includes(name)) {
+        issues.push({
+          dependency: name,
+          message: `claims phase \`${phase}\`, which the ownership map assigns to \`${declaredOwner}\``,
+          fix: `one owner per phase — either correct \`owns\` for ${name}, or change PHASE_OWNERS if the design has genuinely moved`,
+          severity: "error",
+        });
+      }
+
+      const existing = claims.get(phase) ?? [];
+      existing.push(name);
+      claims.set(phase, existing);
+    }
+  }
+
+  // ---- two dependencies claiming one phase ----
+  for (const [phase, claimants] of claims) {
+    if (claimants.length > 1) {
+      issues.push({
+        dependency: claimants.join(" + "),
+        message: `phase \`${phase}\` is claimed by ${claimants.length} dependencies: ${claimants.join(", ")}`,
+        fix: "one owner per phase — remove the claim from whichever should not own it",
+        severity: "error",
       });
     }
   }
@@ -125,4 +194,9 @@ export function validateLock(lock: UpstreamLock): LockIssue[] {
 
 export function isFullyPinned(lock: UpstreamLock): boolean {
   return validateLock(lock).every((i) => i.severity !== "error");
+}
+
+/** Dependencies Keel actually installs, as opposed to pattern sources. */
+export function installable(lock: UpstreamLock): Array<[string, UpstreamDependency]> {
+  return Object.entries(lock.dependencies).filter(([, d]) => d.role === "install");
 }

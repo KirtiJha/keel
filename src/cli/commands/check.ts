@@ -97,8 +97,12 @@ export function check(repoRoot: string, pluginRoot: string): number {
     warnings++;
   } else {
     const issues = validateLock(lock.value);
-    if (issues.length === 0) {
-      ok(`${Object.keys(lock.value.dependencies).length} dependencies pinned and mirrored`);
+    for (const [name, dependency] of Object.entries(lock.value.dependencies)) {
+      const failed = issues.some((i) => i.dependency === name && i.severity === "error");
+      if (failed) continue;
+      const role = dependency.role === "pattern-source" ? " (pattern source, not installed)" : "";
+      const owns = dependency.owns.length > 0 ? ` owns ${dependency.owns.join(", ")}` : "";
+      ok(`${name} @ ${dependency.version}${role}${owns}`);
     }
     for (const issue of issues) {
       if (issue.severity === "error") {

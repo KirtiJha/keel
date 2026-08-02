@@ -107,27 +107,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      # `keel check` exits 1 here on purpose: upstream.lock ships UNPINNED
-      # because the versions are a blocked human input (build spec §1). This
-      # step asserts that the *only* failures are those, so a real regression
-      # in check still fails the build.
-      - name: keel check reports only the documented blocked inputs
-        run: |
-          set +e
-          output=$(node scripts/cli.mjs check 2>&1)
-          status=$?
-          set -e
-          echo "$output"
-
-          errors=$(echo "$output" | grep -c '✗' || true)
-          unpinned=$(echo "$output" | grep -c 'UNPINNED' || true)
-
-          if [ "$status" -eq 0 ]; then
-            echo "::error::keel check unexpectedly passed — upstream.lock should still be UNPINNED"
-            exit 1
-          fi
-          if [ "$errors" -ne "$((unpinned + 1))" ]; then
-            echo "::error::keel check reported errors beyond the documented UNPINNED inputs"
-            exit 1
-          fi
-          echo "only the documented blocked inputs failed"
+      # Keel validating itself. Upstream is pinned, so this must now pass;
+      # outstanding internal mirrors are warnings by design.
+      - name: keel check
+        run: node scripts/cli.mjs check

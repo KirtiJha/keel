@@ -292,20 +292,39 @@ fails if the committed bundles differ from a fresh build.
 
 ---
 
-## Blocked inputs
+## Upstream
 
-Two things are waiting on a human. `keel check` reports both and exits non-zero;
-that failure is the intended behaviour, not an oversight.
+Pinned in `upstream.lock`, resolved 2026-08-02 and checked for mutual
+compatibility. `keel check` rejects any moving version (`latest`, `main`,
+`^1.2.0`) and cross-checks every declared phase against the ownership map.
+
+| Upstream | Version | Role | Owns |
+|---|---|---|---|
+| [Superpowers](https://github.com/obra/superpowers) | `6.2.0` | installed | planning, implementation |
+| [OpenSpec](https://www.npmjs.com/package/@fission-ai/openspec) | `1.7.0` | installed | design, spec-conformance |
+| [Spec Kit](https://github.com/github/spec-kit) | `0.15.1` | **pattern source** | — |
+
+**Spec Kit is pinned but not installed, deliberately.** The plan takes two ideas
+from it — the "constitution" concept and the extension/preset pattern copied for
+standards packs — and nothing else. Its `/speckit.specify` and `/speckit.plan`
+own *design* and *planning*, which OpenSpec and Superpowers already own here;
+installing it would put two owners on both phases and fail the phase-ownership
+check. Recording the version keeps the borrowed ideas traceable.
+
+OpenSpec requires **node >=20.19.0**, which is why `engines.node` is `>=20.19.0`
+rather than `>=20`. Spec Kit requires Python >=3.11, which `python/` already
+does.
+
+Outstanding: internal mirrors for the two installed dependencies. `keel check`
+reports their absence as a warning, so the lock is usable now.
+
+## Blocked inputs
 
 | Input | Needed for | Current state |
 |---|---|---|
-| Superpowers + OpenSpec versions | pinning upstream | `upstream.lock` ships `UNPINNED`. `latest` is explicitly not acceptable. |
 | Telemetry destination | shipping telemetry | Local spool and `file` sink work; `keel telemetry ship` writes a local bundle only. |
-
-Two more shaped the build and are documented in `docs/decisions.md`: the org
-standards PDFs (the pack format and loader are built; only the two reference
-packs ship) and the component MCP server schema (M7 is not started — no
-speculative client was written).
+| Org standards PDFs | migrating org rules to packs | Pack format, loader and gate runner are complete; only the two reference packs ship. |
+| Component MCP server schema | M7 (UI bridge) | Not started. No speculative client was written. |
 
 ---
 

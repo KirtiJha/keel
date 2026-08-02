@@ -140,6 +140,64 @@ function installAgents(repoRoot: string, pluginRoot: string): string[] {
   return installed;
 }
 
+/**
+ * Merge Keel's environment into `.claude/settings.json` (M2.5).
+ *
+ * Merged rather than written: settings.json is a shared file and a developer's
+ * own keys must survive. Only the specific variables Keel owns are touched, and
+ * an existing value is left alone — if someone has deliberately set
+ * `SUPERPOWERS_DISABLE_TELEMETRY=0`, that is their call, not ours to reverse.
+ */
+const KEEL_ENV: Readonly<Record<string, string>> = {
+  // Build spec M2.5. Upstream telemetry is not ours to send.
+  SUPERPOWERS_DISABLE_TELEMETRY: "1",
+};
+
+function writeSettingsEnv(root: string): "created" | "updated" | "unchanged" {
+  const dir = join(root, ".claude");
+  const path = join(dir, "settings.json");
+
+  let settings: Record<string, unknown> = {};
+  let existed = false;
+  if (isFile(path)) {
+    existed = true;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        settings = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // A settings.json we cannot parse is a file we must not overwrite.
+      return "unchanged";
+    }
+  }
+
+  const currentEnv = settings["env"];
+  const env: Record<string, unknown> =
+    typeof currentEnv === "object" && currentEnv !== null && !Array.isArray(currentEnv)
+      ? { ...(currentEnv as Record<string, unknown>) }
+      : {};
+
+  let changed = false;
+  for (const [key, value] of Object.entries(KEEL_ENV)) {
+    if (env[key] === undefined) {
+      env[key] = value;
+      changed = true;
+    }
+  }
+
+  if (!changed) return "unchanged";
+
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path, `${JSON.stringify({ ...settings, env }, null, 2)}\n`, "utf8");
+  } catch {
+    return "unchanged";
+  }
+
+  return existed ? "updated" : "created";
+}
+
 function writeSchema(root: string): void {
   const dir = join(root, ".keel");
   mkdirSync(dir, { recursive: true });
@@ -191,6 +249,11 @@ export function init(options: InitOptions): number {
 
   if (claudeMd.action === "unchanged") info("CLAUDE.md already up to date");
   else ok(`CLAUDE.md ${claudeMd.action}`);
+
+  // ---- environment for upstream tools (M2.5) ----
+  const settings = writeSettingsEnv(repoRoot);
+  if (settings === "unchanged") info(".claude/settings.json already has Keel's environment");
+  else ok(`.claude/settings.json ${settings} (SUPERPOWERS_DISABLE_TELEMETRY=1)`);
 
   // ---- subagents needing privileged frontmatter ----
   const agents = installAgents(repoRoot, pluginRoot);

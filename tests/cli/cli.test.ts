@@ -118,6 +118,43 @@ describe("init", () => {
     expect(readFileSync(join(repo.root, "keel.config.yaml"), "utf8")).not.toContain("hand-written");
   });
 
+  it("writes SUPERPOWERS_DISABLE_TELEMETRY into .claude/settings.json", () => {
+    keel(["init"], repo.root);
+    const settings = JSON.parse(
+      readFileSync(join(repo.root, ".claude", "settings.json"), "utf8"),
+    ) as { env?: Record<string, string> };
+    expect(settings.env?.["SUPERPOWERS_DISABLE_TELEMETRY"]).toBe("1");
+  });
+
+  it("merges into an existing settings.json without losing keys", () => {
+    repo.write(
+      ".claude/settings.json",
+      JSON.stringify({ outputStyle: "keel", env: { EXISTING: "keep-me" } }, null, 2),
+    );
+    keel(["init"], repo.root);
+
+    const settings = JSON.parse(
+      readFileSync(join(repo.root, ".claude", "settings.json"), "utf8"),
+    ) as { outputStyle?: string; env?: Record<string, string> };
+
+    expect(settings.outputStyle).toBe("keel");
+    expect(settings.env?.["EXISTING"]).toBe("keep-me");
+    expect(settings.env?.["SUPERPOWERS_DISABLE_TELEMETRY"]).toBe("1");
+  });
+
+  it("does not reverse a deliberate override", () => {
+    repo.write(
+      ".claude/settings.json",
+      JSON.stringify({ env: { SUPERPOWERS_DISABLE_TELEMETRY: "0" } }, null, 2),
+    );
+    keel(["init"], repo.root);
+
+    const settings = JSON.parse(
+      readFileSync(join(repo.root, ".claude", "settings.json"), "utf8"),
+    ) as { env?: Record<string, string> };
+    expect(settings.env?.["SUPERPOWERS_DISABLE_TELEMETRY"]).toBe("0");
+  });
+
   it("proposes gotchas without writing any", () => {
     repo.writeCommitted("src/thing.ts", "// careful: this ordering is load-bearing for the parser\nexport const a = 1;\n");
     const run = keel(["init"], repo.root);
@@ -320,11 +357,24 @@ describe("gotchas", () => {
 });
 
 describe("check on this repository", () => {
-  it("passes, apart from the documented blocked inputs", () => {
+  // keel: allow-test-change renamed from "passes, apart from the documented
+  // blocked inputs" — upstream is now pinned, so `keel check` passes outright
+  // and the old name asserted the opposite. Keel's own gate 1 flagged the
+  // rename as a removed test, which is correct: it cannot tell a rename from a
+  // deletion, and this is the escape hatch for when a human can.
+  it("passes — upstream is pinned and phase ownership is clean", () => {
     const run = keel(["check"], PLUGIN_ROOT);
     expect(run.stdout).toContain("keel.config.yaml valid");
     expect(run.stdout).toContain("no-raw-color-values");
-    // upstream.lock ships UNPINNED on purpose; that is the only expected failure.
-    expect(run.stdout).toContain("UNPINNED");
+    expect(run.stdout).toContain("superpowers @");
+    expect(run.stdout).toContain("openspec @");
+    // Outstanding internal mirrors are warnings by design, never errors.
+    expect(run.stdout).toContain("no errors");
+    expect(run.status).toBe(0);
+  });
+
+  it("keeps spec-kit out of the installed set, so it cannot contend for a phase", () => {
+    const run = keel(["check"], PLUGIN_ROOT);
+    expect(run.stdout).toContain("spec-kit @ 0.15.1 (pattern source, not installed)");
   });
 });

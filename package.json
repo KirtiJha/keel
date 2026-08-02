@@ -6,7 +6,7 @@
   "license": "UNLICENSED",
   "private": true,
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   },
   "bin": {
     "keel": "./bin/keel.mjs"

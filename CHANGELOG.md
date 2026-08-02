@@ -7,17 +7,36 @@ semver.
 
 ## [Unreleased]
 
+### Changed
+
+- **Upstream is pinned.** Superpowers `6.2.0` (planning, implementation) and
+  OpenSpec `@fission-ai/openspec@1.7.0` (design, spec-conformance) are installed
+  and pinned to exact versions. `keel check` passes on this repository.
+- **Spec Kit `0.15.1` is pinned as a `pattern-source`, not installed.** The plan
+  takes two ideas from it and nothing else; its `/speckit.specify` and
+  `/speckit.plan` would claim design and planning, which OpenSpec and
+  Superpowers already own. A new `role` field distinguishes an installed
+  dependency from one we only borrowed ideas from, and a pattern source
+  declaring `owns:` is an error.
+- **`engines.node` raised to `>=20.19.0`** to match OpenSpec's requirement.
+  Previously `>=20`, under which a Node 20.0 install would fail at runtime.
+- **`upstream.lock` now cross-checks phase ownership.** Each dependency's
+  `owns:` is validated against `PHASE_OWNERS`, and two dependencies claiming one
+  phase is an error — completing the M2.3 requirement.
+- **`keel init` writes `SUPERPOWERS_DISABLE_TELEMETRY=1`** into
+  `.claude/settings.json` (M2.5), merging rather than overwriting and never
+  reversing a deliberate override.
+
 ### Blocked on human input
 
-- **Upstream versions.** `upstream.lock` ships `superpowers` and `openspec` as
-  `UNPINNED`. `keel check` fails on each and names the fix. Exact versions are
-  required; `latest` is not acceptable (build spec §1).
 - **Telemetry destination.** The local JSONL spool and `file` sink work.
   `keel telemetry ship` writes a local bundle and says the real sink is missing.
 - **Org standards PDFs.** The pack format, loader, and gate runner are complete;
   only the two reference packs ship. Migrating the PDFs needs the PDFs.
 - **Component MCP server schema.** M7 (UI bridge) is not started. No speculative
   client was written.
+- **Internal mirrors** for the two installed dependencies. Reported by
+  `keel check` as a warning, not an error, so the lock is usable now.
 
 ## [0.1.0] — initial build
 

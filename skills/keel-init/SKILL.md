@@ -73,11 +73,18 @@ session as a spike. It does not relax 2 or 4.
 - `standards/` — the packs; see the `keel-standards` skill to add one
 - `.keel/` — cache, telemetry spool, TDD state. Gitignored, safe to delete.
 
+## Upstream
+
+`upstream.lock` pins Superpowers `6.2.0` (planning, implementation) and OpenSpec
+`1.7.0` (design, spec-conformance). Spec Kit `0.15.1` is pinned as a *pattern
+source*: we took two ideas from it and do not install it, because its commands
+would claim phases OpenSpec and Superpowers already own.
+
+`keel check` rejects moving versions and fails if two things claim one phase.
+
 ## Blocked inputs
 
-Two things are waiting on a human and `keel check` will keep reporting them:
-
-- **`upstream.lock`** ships with `UNPINNED` versions. Exact versions of
-  Superpowers and OpenSpec are required; `latest` is not acceptable.
 - **Telemetry destination.** The local spool works; `keel telemetry ship` writes
   a local bundle only.
+- **Internal mirrors** for the two installed dependencies — a warning, not an
+  error.

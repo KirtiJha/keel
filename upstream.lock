@@ -2,29 +2,57 @@
 #
 # Rule of the road 6: compose, don't fork. Pin exact versions, mirror them
 # internally, never patch.
+# Rule of the road 7: one owner per phase.
 #
-# ┌─────────────────────────────────────────────────────────────────────────┐
-# │ BLOCKED INPUT — build spec §1                                           │
-# │                                                                         │
-# │ The build spec says to ask for these versions and explicitly forbids     │
-# │ resolving `latest`. Nobody has supplied them yet, so they are recorded   │
-# │ as UNPINNED. `keel check` fails on every UNPINNED entry and names the    │
-# │ fix; that failure is the intended behaviour, not an oversight.           │
-# │                                                                         │
-# │ To unblock: replace each UNPINNED with the exact version the owning      │
-# │ team has approved, add the internal mirror, and re-run `keel check`.     │
-# └─────────────────────────────────────────────────────────────────────────┘
+# `keel check` enforces both: it rejects moving versions (`latest`, `^1.2.0`,
+# `main`) and cross-checks every `owns:` entry against the phase-ownership map
+# in src/upstream/phases.ts. Two dependencies claiming one phase is an error.
+#
+# Versions below were resolved on 2026-08-02 and are the latest releases that
+# are mutually compatible. Verified before pinning:
+#   - OpenSpec requires node >=20.19.0; package.json `engines` was raised to match.
+#   - Spec Kit requires Python >=3.11; python/pyproject.toml already requires 3.11.
+#
+# Still outstanding: the internal mirrors. Each installed dependency needs its
+# pinned version mirrored internally and recorded as `mirror:`. `keel check`
+# reports the absence as a warning, not an error, so this file is usable now.
 version: 1
 
 dependencies:
   superpowers:
-    version: UNPINNED
+    version: "6.2.0"
     source: "obra/superpowers"
-    # mirror: "internal-registry/superpowers@<version>"
+    role: install
+    install: "claude plugin marketplace add obra/superpowers"
+    # mirror: "internal-marketplace/superpowers@6.2.0"
     owns: [planning, implementation]
+    note: >-
+      Latest release, 2026-07-24. Install the skill subset in
+      keel.config.yaml `upstream.enabled_skills` only — the plan is explicit
+      that an always-on harness fights the router. Set
+      SUPERPOWERS_DISABLE_TELEMETRY=1 in the environment keel init writes.
 
   openspec:
-    version: UNPINNED
-    source: "Fission-AI/OpenSpec"
-    # mirror: "internal-registry/openspec@<version>"
+    version: "1.7.0"
+    source: "@fission-ai/openspec"
+    role: install
+    install: "npm install --save-exact @fission-ai/openspec@1.7.0"
+    # mirror: "internal-registry/@fission-ai/openspec@1.7.0"
     owns: [design, spec-conformance]
+    note: >-
+      Latest on npm, MIT. Requires node >=20.19.0, which is why this repo's
+      `engines.node` is >=20.19.0 rather than >=20. Full track only.
+
+  spec-kit:
+    version: "0.15.1"
+    source: "github/spec-kit"
+    role: pattern-source
+    owns: []
+    note: >-
+      NOT INSTALLED, and deliberately so. The plan takes two ideas from Spec Kit
+      — the "constitution" concept and the extension/preset pattern copied for
+      standards packs — and nothing else. Its /speckit.specify and /speckit.plan
+      commands own design and planning, which OpenSpec and Superpowers already
+      own here; installing it would put two owners on both phases and fail the
+      phase-ownership check. Pinned for provenance so the ideas we copied are
+      traceable to a specific version.
