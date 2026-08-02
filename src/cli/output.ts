@@ -47,6 +47,28 @@ export function detail(text: string): void {
   line(`    ${dim(text)}`);
 }
 
+/**
+ * A usage or precondition error: the command did not run at all.
+ *
+ * Goes to **stderr**, unlike `fail`, which reports a finding the command was
+ * asked to look for and belongs in the report on stdout. The split matters in
+ * CI: `keel route --against origin/main` on an unfetched ref used to exit 0
+ * with an empty stderr, so a wrapper script had nothing to detect.
+ */
+export function fatal(text: string): void {
+  process.stderr.write(`  ${red(SYMBOLS.fail)} ${text}\n`);
+}
+
+/** The fix line under a `fatal`. Same stream, same indent as `detail`. */
+export function fatalDetail(text: string): void {
+  process.stderr.write(`    ${dim(text)}\n`);
+}
+
+/** One JSON document on stdout, for `--json`. */
+export function json(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
 /** Render key/value rows with aligned keys. */
 export function rows(entries: ReadonlyArray<readonly [string, string]>): void {
   const width = entries.reduce((max, [k]) => Math.max(max, k.length), 0);

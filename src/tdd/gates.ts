@@ -215,49 +215,91 @@ export function gateObservedRed(
  * Gate 4 — assertion lint.
  *
  * Fast, in-loop, and about the test as written rather than how it changed.
+ *
+ * Takes the same override directives as gate 1. They used not to be passed at
+ * all, so `keel: allow-test-change <reason>` suppressed a weakening finding but
+ * silently did nothing to an assertion-lint block — an escape hatch that is
+ * documented, reached for under pressure, and then does not open.
  */
-export function gateAssertionLint(analysis: TestFileAnalysis): GateOutcome {
+export function gateAssertionLint(
+  analysis: TestFileAnalysis,
+  overrides: readonly OverrideDirective[] = [],
+): GateOutcome {
   if (analysis.unparsed) return clean("assertion-lint");
 
   const violations: TddViolation[] = [];
+  const overrideReasons: string[] = [];
+  let overridden = false;
+
+  // Lines that start a test, so an override can be attributed to the test it
+  // sits inside rather than only to the declaration line.
+  const testLines = analysis.tests.map((t) => t.line).sort((a, b) => a - b);
+  const firstTestLine = testLines[0] ?? Number.POSITIVE_INFINITY;
+
+  const appliedOverride = (line: number): OverrideDirective | null => {
+    // The declaration line itself, or the comment line directly above it.
+    const direct = overrideFor(overrides, line);
+    if (direct !== null) return direct;
+    // Inside the test's body: everything up to the next test declaration.
+    const next = testLines.find((l) => l > line) ?? Number.POSITIVE_INFINITY;
+    const inside = overrides.find((o) => o.line >= line && o.line < next);
+    if (inside !== undefined) return inside;
+    // A header override, above every test, covers the file.
+    return overrides.find((o) => o.line <= firstTestLine) ?? null;
+  };
+
+  const record = (violation: TddViolation, line: number): void => {
+    const applied = appliedOverride(line);
+    if (applied !== null) {
+      overridden = true;
+      overrideReasons.push(applied.reason);
+      return;
+    }
+    violations.push(violation);
+  };
 
   for (const test of analysis.tests) {
     if (test.skipped) continue;
+    // A `describe` is not a test. One containing no inner `it` — only a
+    // `beforeEach`, or tests registered by a helper — reaches here as a leaf,
+    // and linting it produces `test "suite" asserts nothing` about a block
+    // that never claimed to assert.
+    if (test.suite) continue;
 
     if (test.assertions === 0) {
-      violations.push({
+      record({
         gate: "assertion-lint",
         line: test.line,
         message: `test "${test.name}" asserts nothing`,
         fix: "assert on the behaviour, or delete the test — a test that cannot fail is worse than no test",
-      });
+      }, test.line);
       continue;
     }
 
     const snapshotOnly =
       test.matchers.length > 0 && test.matchers.every((m) => SNAPSHOT_MATCHERS.has(m));
     if (snapshotOnly) {
-      violations.push({
+      record({
         gate: "assertion-lint",
         line: test.line,
         message: `test "${test.name}" asserts only via snapshot`,
         fix: "assert the specific behaviour you care about; a snapshot records whatever the code did, including a bug",
-      });
+      }, test.line);
       continue;
     }
 
     const weakOnly = test.matchers.length > 0 && test.matchers.every((m) => WEAK_MATCHERS.has(m));
     if (weakOnly) {
-      violations.push({
+      record({
         gate: "assertion-lint",
         line: test.line,
         message: `test "${test.name}" asserts only truthiness or definedness`,
         fix: "assert the actual value with `toBe`/`toEqual` (or `assertEqual`) so the test can distinguish right from wrong",
-      });
+      }, test.line);
     }
   }
 
-  return { gate: "assertion-lint", violations, overridden: false, overrideReasons: [] };
+  return { gate: "assertion-lint", violations, overridden, overrideReasons };
 }
 
 /** Render violations for a hook's stderr. */

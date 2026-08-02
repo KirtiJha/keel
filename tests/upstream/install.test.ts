@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   classify,
+  installedPluginVersion,
   marketplaceSettings,
   npmPackageName,
   planInstall,
   runInstall,
   upstreamStatus,
 } from "../../src/upstream/install.js";
+import { auditPhases, skillRoots } from "../../src/upstream/phases.js";
 import { loadLock, type UpstreamDependency, type UpstreamLock } from "../../src/upstream/lock.js";
 import {
   EFFORT_LEVELS,
@@ -239,7 +241,14 @@ describe("upstream status", () => {
     expect(status[0]?.detail).toContain("/plugin");
   });
 
-  it("counts a declared marketplace as configured", () => {
+  // keel: allow-test-change renamed from "counts a declared marketplace as
+  // configured", which asserted the defect: a declared marketplace says the
+  // repo would *like* the plugin available, carries no version, and calling it
+  // "installed" made `wrong-version` unreachable for every plugin dependency —
+  // the one state the lock exists to catch. Keel's own gate 1 flagged the
+  // rename as a removed test, correctly: it cannot tell a rename from a
+  // deletion, and this is the escape hatch for when a human can.
+  it("does not mistake a declared marketplace for a known version", () => {
     repo.write(
       ".claude/settings.json",
       JSON.stringify({ extraKnownMarketplaces: { sp: { source: { source: "github", repo: "obra/superpowers" } } } }),
@@ -248,7 +257,105 @@ describe("upstream status", () => {
       repo.root,
       lock({ sp: dep({ source: "obra/superpowers", install: "claude plugin marketplace add obra/superpowers" }) }),
     );
+    expect(status[0]?.state).toBe("unverifiable");
+    expect(status[0]?.detail).toContain("declared in .claude/settings.json");
+    expect(status[0]?.detail).toContain("unknown");
+  });
+
+  it("reads a plugin's real version from its manifest", () => {
+    repo.write(
+      ".claude/plugins/superpowers/.claude-plugin/plugin.json",
+      JSON.stringify({ name: "superpowers", version: "6.2.0" }),
+    );
+    const status = upstreamStatus(
+      repo.root,
+      lock({
+        superpowers: dep({
+          version: "6.2.0",
+          source: "obra/superpowers",
+          install: "claude plugin marketplace add obra/superpowers#v6.2.0",
+        }),
+      }),
+    );
     expect(status[0]?.state).toBe("installed");
+    expect(status[0]?.found).toBe("6.2.0");
+  });
+
+  it("reports wrong-version for a plugin whose manifest disagrees with the pin", () => {
+    repo.write(
+      ".claude/plugins/superpowers/.claude-plugin/plugin.json",
+      JSON.stringify({ name: "superpowers", version: "5.0.0" }),
+    );
+    const status = upstreamStatus(
+      repo.root,
+      lock({
+        superpowers: dep({
+          version: "6.2.0",
+          source: "obra/superpowers",
+          install: "claude plugin marketplace add obra/superpowers#v6.2.0",
+        }),
+      }),
+    );
+    expect(status[0]?.state).toBe("wrong-version");
+    expect(status[0]?.detail).toContain("5.0.0");
+    expect(status[0]?.detail).toContain("6.2.0");
+  });
+
+  it("reads a version out of a marketplace manifest under repos/<owner>/<repo>", () => {
+    repo.write(
+      ".claude/plugins/repos/obra/superpowers/.claude-plugin/marketplace.json",
+      JSON.stringify({ name: "superpowers", plugins: [{ name: "superpowers", version: "6.2.0" }] }),
+    );
+    const status = upstreamStatus(
+      repo.root,
+      lock({
+        superpowers: dep({
+          version: "6.2.0",
+          source: "obra/superpowers",
+          install: "claude plugin marketplace add obra/superpowers#v6.2.0",
+        }),
+      }),
+    );
+    expect(status[0]?.state).toBe("installed");
+  });
+
+  it("treats v-prefixed and bare versions as the same pin", () => {
+    repo.write(
+      ".claude/plugins/superpowers/.claude-plugin/plugin.json",
+      JSON.stringify({ name: "superpowers", version: "v6.2.0" }),
+    );
+    const status = upstreamStatus(
+      repo.root,
+      lock({
+        superpowers: dep({
+          version: "6.2.0",
+          source: "obra/superpowers",
+          install: "claude plugin marketplace add obra/superpowers#v6.2.0",
+        }),
+      }),
+    );
+    expect(status[0]?.state).toBe("installed");
+  });
+
+  it("finds a plugin through CLAUDE_CONFIG_DIR", () => {
+    repo.write(
+      "elsewhere/plugins/marketplaces/superpowers/.claude-plugin/plugin.json",
+      JSON.stringify({ name: "superpowers", version: "6.2.0" }),
+    );
+    const previous = process.env["CLAUDE_CONFIG_DIR"];
+    process.env["CLAUDE_CONFIG_DIR"] = join(repo.root, "elsewhere");
+    try {
+      const found = installedPluginVersion(repo.root, "superpowers", {
+        version: "6.2.0",
+        source: "obra/superpowers",
+        role: "install",
+        owns: [],
+      } as UpstreamDependency);
+      expect(found?.version).toBe("6.2.0");
+    } finally {
+      if (previous === undefined) delete process.env["CLAUDE_CONFIG_DIR"];
+      else process.env["CLAUDE_CONFIG_DIR"] = previous;
+    }
   });
 
   it("ignores pattern sources entirely", () => {
@@ -361,5 +468,48 @@ describe("this repository's lock", () => {
     const plan = planInstall(repo.root, loaded.value);
     expect(plan.map((s) => s.name).sort()).toEqual(["openspec", "superpowers"]);
     expect(plan.every((s) => s.command !== "")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase-ownership audit
+// ---------------------------------------------------------------------------
+
+describe("phase ownership audit", () => {
+  const skill = (name: string, phase: string): string =>
+    ["---", `name: ${name}`, `keel-phases: [${phase}]`, "---", "", "Body."].join("\n");
+
+  it("collapses the roots that coincide when the repo is the plugin", () => {
+    // repoRoot === pluginRoot makes `<plugin>/skills` and `<repo>/skills` the
+    // same directory. Walking both counted every claim twice — the reason
+    // `keel check` said "2 declared claims" for one real claim.
+    repo.write("skills/only-one/SKILL.md", skill("only-one", "classification"));
+
+    const audit = auditPhases(repo.root, repo.root);
+    expect(audit.claims).toHaveLength(1);
+    expect(audit.conflicts).toEqual([]);
+  });
+
+  it("de-duplicates the search roots themselves", () => {
+    expect(skillRoots(repo.root, repo.root)).toHaveLength(2);
+    expect(new Set(skillRoots(repo.root, repo.root)).size).toBe(2);
+  });
+
+  it("still sees two distinct roots when the plugin is elsewhere", () => {
+    repo.write("skills/mine/SKILL.md", skill("mine", "classification"));
+    repo.write(".claude/skills/theirs/SKILL.md", skill("theirs", "classification"));
+
+    const audit = auditPhases(repo.root, join(repo.root, "not-here"));
+    expect(audit.claims).toHaveLength(2);
+    expect(audit.conflicts).toHaveLength(1);
+  });
+
+  it("reports which directories it actually read, so a clean result can be read honestly", () => {
+    repo.write("skills/mine/SKILL.md", skill("mine", "classification"));
+
+    const audit = auditPhases(repo.root, join(repo.root, "not-here"));
+    expect(audit.roots).toContain(join(repo.root, "skills"));
+    // A directory that does not exist was not inspected and must not be claimed.
+    expect(audit.roots).not.toContain(join(repo.root, "not-here", "skills"));
   });
 });

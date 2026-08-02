@@ -12,9 +12,22 @@ import { PLUGIN_ROOT, TempRepo } from "../helpers/temp-repo.js";
  * Measured warm, with the compiler resident and the rule compiled — which is
  * the steady state after the first edit of a session. The one-off compiler load
  * is reported separately by the hook cold-start benchmark.
+ *
+ * **Reported, not gated on the tight number.** `npm test` is the oracle `keel
+ * mutate` uses to decide whether a mutant was killed, so a wall-clock assertion
+ * here does not just flake a build — a timing blip during a mutant run scores
+ * that mutant as killed and inflates the mutation score, which is the number
+ * this project uses in place of coverage. The sibling router benchmark solves
+ * this by asserting a scaling ratio; per-file gate cost has no such second
+ * measurement to divide by, so it asserts only a catastrophic-regression
+ * ceiling. The p50/p95 against the real budget are printed on every run, and
+ * the honest gate for them is the benchmark job, not the correctness suite.
  */
 
+/** The acceptance target. Printed and compared, never asserted — see above. */
 const BUDGET_MS = 200;
+/** Catches an order-of-magnitude regression while ignoring scheduler jitter. */
+const SANITY_CEILING_MS = 2000;
 let repo: TempRepo;
 
 function percentile(values: readonly number[], p: number): number {
@@ -81,10 +94,12 @@ describe("gate runner performance", () => {
 
     const p50 = percentile(timings, 50);
     const p95 = percentile(timings, 95);
+    const verdict = p95 < BUDGET_MS ? "within budget" : "OVER BUDGET — investigate";
     console.log(
-      `\n  gate runner: p50 ${p50.toFixed(1)} ms, p95 ${p95.toFixed(1)} ms (budget ${BUDGET_MS} ms)\n`,
+      `\n  gate runner: p50 ${p50.toFixed(1)} ms, p95 ${p95.toFixed(1)} ms ` +
+        `(budget ${BUDGET_MS} ms) — ${verdict}\n`,
     );
 
-    expect(p95).toBeLessThan(BUDGET_MS);
+    expect(p95).toBeLessThan(SANITY_CEILING_MS);
   }, 120_000);
 });

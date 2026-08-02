@@ -89,6 +89,47 @@ describe("extractSymbols", () => {
     expect(extractSymbols(before)[0]?.signature).not.toBe(extractSymbols(after)[0]?.signature);
   });
 
+  // The `.body` test only holds for `function`. A VariableDeclaration exposes
+  // `.initializer` and a ClassDeclaration exposes `.members`, so both fell
+  // through to the whole declaration text — and a one-line body edit to an
+  // arrow-const routed to the full track while the identical edit written as a
+  // function declaration routed to quick.
+  it("excludes the body from an arrow-const signature", async () => {
+    const before = await parseSource("m.ts", "export const f = (a: number): number => {\n  return Math.round(a);\n};");
+    const after = await parseSource("m.ts", "export const f = (a: number): number => {\n  return Math.trunc(a);\n};");
+    if (before === null || after === null) throw new Error("parse failed");
+    expect(extractSymbols(before)[0]?.signature).toBe(extractSymbols(after)[0]?.signature);
+  });
+
+  it("detects a real parameter change on an arrow-const", async () => {
+    const before = await parseSource("m.ts", "export const f = (a: number): number => a;");
+    const after = await parseSource("m.ts", "export const f = (a: number, b: number): number => a;");
+    if (before === null || after === null) throw new Error("parse failed");
+    expect(extractSymbols(before)[0]?.signature).not.toBe(extractSymbols(after)[0]?.signature);
+  });
+
+  it("excludes method bodies from a class signature", async () => {
+    const before = await parseSource("m.ts", "export class W {\n  total(): number {\n    return 1;\n  }\n}");
+    const after = await parseSource("m.ts", "export class W {\n  total(): number {\n    return 2;\n  }\n}");
+    if (before === null || after === null) throw new Error("parse failed");
+    expect(extractSymbols(before)[0]?.signature).toBe(extractSymbols(after)[0]?.signature);
+  });
+
+  it("detects a changed method signature on a class", async () => {
+    const before = await parseSource("m.ts", "export class W {\n  total(): number {\n    return 1;\n  }\n}");
+    const after = await parseSource("m.ts", "export class W {\n  total(scale: number): number {\n    return 1;\n  }\n}");
+    if (before === null || after === null) throw new Error("parse failed");
+    expect(extractSymbols(before)[0]?.signature).not.toBe(extractSymbols(after)[0]?.signature);
+  });
+
+  // A plain exported value has no body to separate: the value IS the contract.
+  it("treats a changed exported constant as a signature change", async () => {
+    const before = await parseSource("m.ts", "export const MAX = 10;");
+    const after = await parseSource("m.ts", "export const MAX = 20;");
+    if (before === null || after === null) throw new Error("parse failed");
+    expect(extractSymbols(before)[0]?.signature).not.toBe(extractSymbols(after)[0]?.signature);
+  });
+
   it("picks up named re-exports", async () => {
     const parsed = await parseSource("m.ts", "export { a, b } from './other.js';");
     if (parsed === null) throw new Error("parse failed");

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { Track } from "../shared/config.js";
+import { redact } from "../shared/redact.js";
 
 /**
  * Telemetry events and their serialiser.
@@ -21,7 +22,15 @@ import type { Track } from "../shared/config.js";
 
 export const TRACKS: readonly Track[] = ["quick", "standard", "full"];
 
-export type GateResultKind = "pass" | "fail" | "warn" | "error";
+/**
+ * `untrusted` and `skipped` are not failures and not passes.
+ *
+ * Folding them into `pass` is how a gate that never ran comes to look like a
+ * gate that found nothing — which is the exact reading the telemetry exists to
+ * prevent. "This pack has not fired in a quarter" means something very
+ * different if the pack has not been approved to run.
+ */
+export type GateResultKind = "pass" | "fail" | "warn" | "error" | "untrusted" | "skipped";
 export type TddGateName = "test-weakening" | "mock-under-test" | "observed-red" | "assertion-lint";
 export type TddResultKind = "pass" | "block" | "skip" | "error";
 export type Severity = "high" | "medium" | "low";
@@ -102,6 +111,20 @@ export type TelemetryEvent = TelemetryEventInput & BaseFields;
 const isTrack = (v: unknown): v is Track => typeof v === "string" && TRACKS.includes(v as Track);
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/**
+ * The allowlist above is the primary control: a field the serialiser does not
+ * name cannot reach disk. These two — a pack name and a hook name — are the only
+ * free text that *is* named, so they are scrubbed as well. Both are constrained
+ * upstream (pack names are regex-validated in `standard.yaml`, hook names come
+ * from Claude Code), which is exactly why this is cheap: it costs nothing on the
+ * values we expect and closes the one path a string could travel.
+ *
+ * Constraint 0.10 names telemetry explicitly, and defence in depth on the only
+ * free-text field is the whole of the difference between "no known leak" and
+ * "no leak".
+ */
+const text = (v: unknown): string => redact(str(v));
 const bool = (v: unknown): boolean => v === true;
 
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T =>
@@ -161,7 +184,7 @@ export function serialiseEvent(
       return {
         ...base,
         kind: "gate",
-        pack: str(e["pack"]),
+        pack: text(e["pack"]),
         severity: oneOf(e["severity"], SEVERITIES, "medium"),
         result: oneOf(e["result"], GATE_RESULTS, "pass"),
         finding_count: num(e["finding_count"]),
@@ -210,7 +233,7 @@ export function serialiseEvent(
       return {
         ...base,
         kind: "hook_timing",
-        hook: str(e["hook"]),
+        hook: text(e["hook"]),
         duration_ms: num(e["duration_ms"]),
         loaded_ast: bool(e["loaded_ast"]),
       };

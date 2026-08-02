@@ -7,16 +7,21 @@ import {
   upstreamStatus,
 } from "../../upstream/install.js";
 import { installable, loadLock, validateLock, type UpstreamLock } from "../../upstream/lock.js";
-import { bold, detail, dim, fail, heading, info, line, ok } from "../output.js";
+import { bold, detail, dim, fail, heading, info, json, line, ok, warn } from "../output.js";
 
 /**
  * `keel upstream <status|install>` — the pinned set, verified and installed.
  *
- * Build spec M2.2: "`keel init` installs the pinned set." Installing is split
- * into its own command rather than buried in `init` because it mutates
- * `node_modules` and registers a plugin marketplace — trusted operations that
- * should be something a person asked for, not a side effect of scaffolding.
- * `keel init` calls it unless `--no-install` is passed.
+ * Installing is its own command rather than a step inside `init` because it
+ * mutates `node_modules` and registers a plugin marketplace — trusted
+ * operations that should be something a person asked for, not a side effect of
+ * scaffolding a config file.
+ *
+ * **`keel init` therefore does not install anything.** It scaffolds a starter
+ * `upstream.lock` if the repo has none, and reports which pinned dependencies
+ * are missing. `--no-install` skips that *report*. The flag used to be
+ * documented as "skip installing the upstream set", describing behaviour that
+ * did not exist in either direction.
  */
 
 export interface UpstreamOptions {
@@ -24,21 +29,35 @@ export interface UpstreamOptions {
   readonly subcommand: string | null;
   readonly dryRun: boolean;
   readonly json: boolean;
+  /**
+   * Approve writing the lock's marketplaces into the committed
+   * `.claude/settings.json`. Off by default: see `declareMarketplaces`.
+   */
+  readonly approveMarketplaces?: boolean;
 }
 
 export function upstream(options: UpstreamOptions): number {
   const lock = loadLock(options.repoRoot);
   if (!lock.ok) {
+    if (options.json) {
+      json({ ok: false, error: lock.error, fix: "run `keel init` to scaffold an upstream.lock" });
+      return 1;
+    }
     fail(lock.error);
-    detail("run `keel init`, or add an upstream.lock recording the pinned set");
+    detail("fix: run `keel init` — it scaffolds a starter upstream.lock you then fill in");
     return 1;
   }
 
   const blocking = validateLock(lock.value).filter((i) => i.severity === "error");
   if (blocking.length > 0) {
+    if (options.json) {
+      json({ ok: false, error: "upstream.lock is not valid", issues: blocking });
+      return 1;
+    }
     fail("upstream.lock is not valid, so nothing was installed");
     for (const issue of blocking) {
       detail(`${issue.dependency}: ${issue.message}`);
+      detail(`fix: ${issue.fix}`);
     }
     return 1;
   }
@@ -65,7 +84,14 @@ function upstreamStatusCommand(options: UpstreamOptions, lock: UpstreamLock): nu
 
   heading("Upstream");
   if (status.length === 0) {
-    info("nothing to install — every entry is a pattern source");
+    if (Object.keys(lock.dependencies).length === 0) {
+      info("upstream.lock records no dependencies yet");
+      detail(
+        "fix: add the toolchains this repository pins under `dependencies:` — `keel init` leaves the file with a worked example",
+      );
+    } else {
+      info("nothing to install — every entry is a pattern source");
+    }
     line();
     return 0;
   }
@@ -134,17 +160,7 @@ function upstreamInstall(options: UpstreamOptions, lock: UpstreamLock): number {
     if (result.value.every((o) => !o.ran)) info("everything was already at its pin");
   }
 
-  // Declaring the marketplace in project settings is what makes a teammate's
-  // session offer to install it; the plugin itself still installs per person.
-  const marketplaces = marketplaceSettings(lock);
-  if (Object.keys(marketplaces).length > 0 && !options.dryRun) {
-    const written = updateSettings(options.repoRoot, "project", (current) =>
-      mergeObjectKey(current, "extraKnownMarketplaces", marketplaces),
-    );
-    if (written.ok && written.value !== "unchanged") {
-      ok(`declared ${Object.keys(marketplaces).length} marketplace(s) in .claude/settings.json`);
-    }
-  }
+  declareMarketplaces(options, lock, failures);
 
   const pluginSteps = plan.filter((s) => s.kind === "plugin" && !s.skipped);
   if (pluginSteps.length > 0) {
@@ -159,6 +175,61 @@ function upstreamInstall(options: UpstreamOptions, lock: UpstreamLock): number {
   }
 
   return failures > 0 ? 1 : 0;
+}
+
+/**
+ * Write `extraKnownMarketplaces` into the committed project settings — but only
+ * when a human has said so, and only when the install actually worked.
+ *
+ * Two things were wrong. The declaration was written even when the install step
+ * had **failed**, so a repository advertised a marketplace that had never been
+ * successfully added. And it was written with no confirmation at all: the map
+ * is derived from repo-supplied `upstream.lock` content, it lands in the file
+ * this code's own comment says makes "a teammate's session offer to install
+ * it", and registering a marketplace is an arbitrary-code-execution surface.
+ * Cloning a repository and running one command should not be able to arrange
+ * that for everyone else on the team.
+ *
+ * So it needs `--yes`, and the message says exactly what would be written.
+ */
+function declareMarketplaces(options: UpstreamOptions, lock: UpstreamLock, failures: number): void {
+  const marketplaces = marketplaceSettings(lock);
+  const names = Object.keys(marketplaces);
+  if (names.length === 0 || options.dryRun) return;
+
+  if (failures > 0) {
+    warn(`not declaring ${names.join(", ")} in .claude/settings.json — the install failed`);
+    detail("fix: resolve the failure above and re-run `keel upstream install --yes`");
+    return;
+  }
+
+  if (options.approveMarketplaces !== true) {
+    heading("Marketplaces (not declared)");
+    info(`${names.length} marketplace(s) from upstream.lock would be written to .claude/settings.json:`);
+    for (const name of names) detail(`${name}: ${JSON.stringify(marketplaces[name])}`);
+    detail(
+      "that file is committed, so the entry asks every teammate's session to add the marketplace — a code-execution surface, from content this repository supplied",
+    );
+    detail("approve it explicitly with `keel upstream install --yes`");
+    return;
+  }
+
+  const written = updateSettings(options.repoRoot, "project", (current) =>
+    mergeObjectKey(current, "extraKnownMarketplaces", marketplaces),
+  );
+  if (!written.ok) {
+    warn(`could not write .claude/settings.json: ${written.error}`);
+    detail("fix: check the file is writable and valid JSON");
+    return;
+  }
+  if (written.value === "unreadable") {
+    warn(".claude/settings.json could not be parsed, so it was left alone");
+    detail("fix: repair the JSON, then re-run `keel upstream install --yes`");
+    return;
+  }
+  if (written.value !== "unchanged") {
+    ok(`declared ${names.length} marketplace(s) in .claude/settings.json: ${names.join(", ")}`);
+  }
 }
 
 /**

@@ -24,17 +24,37 @@ yours and OpenSpec's; Keel deliberately writes no prose.
 
 ## The four rules
 
-### 1. Bootstrap brownfield with `/opsx:onboard`
-
-Point OpenSpec at a legacy service and get back specs describing what the code
-**actually does**. Once per repo, human-reviewed, then committed.
+### 1. Learn the loop on your own repo with `/opsx:onboard`
 
 ```
 keel spec onboard    # checks OpenSpec is installed and hands over
 ```
 
-Do not hand-write specs for existing behaviour, and do not let generated output
-land unreviewed. A confident wrong spec is worse than no spec.
+**What it actually is.** `/opsx:onboard` is a guided walkthrough of one
+end-to-end change: OpenSpec finds something small and safe to improve in your
+codebase, then takes you through proposing, building and archiving it,
+explaining each step. It is a tutorial that produces one real change.
+
+**What it is not.** It does **not** reverse-engineer specs from existing code.
+OpenSpec ships nothing that does — there is no command that reads a legacy
+service and emits specs describing what it currently does, and its own docs do
+not cover brownfield adoption at all. If you were expecting a bootstrap pass
+that fills `openspec/specs/` from the code you already have, it does not exist,
+in OpenSpec or in Keel.
+
+**It is expanded-profile only.** On a default OpenSpec install the command is
+not there. The core profile has `/opsx:propose`, `/opsx:explore`, `/opsx:apply`,
+`/opsx:update`, `/opsx:sync` and `/opsx:archive`; `/opsx:onboard` sits with
+`/opsx:new`, `/opsx:continue`, `/opsx:ff`, `/opsx:verify` and
+`/opsx:bulk-archive` in the expanded set. Switch with `openspec config profile`
+and apply with `openspec update`, then re-run.
+
+**So how does a legacy repo get specs?** One change at a time. Specs accrete:
+the first full-track change in an area writes the spec for the part it touches,
+and the archive-at-merge rule below keeps it current from then on. That is
+slower than a bootstrap pass and it is the honest answer — a spec generated in
+bulk from code nobody reviewed is a confident, wrong, permanent description of
+behaviour, which is worse than an absent one.
 
 ### 2. Archive at merge
 

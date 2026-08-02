@@ -51,24 +51,61 @@ Work down this list and stop at the first that fits.
 
 ## Writing a gate rule
 
+Declare the contract in the rule file. It is four fields and two types, and it
+is the form that works in any repository:
+
 ```ts
-import type { Finding, GateContext } from "../../src/standards/types.js";
+// standards/<name>/rule.ts
+
+interface Finding {
+  line: number;          // 1-based, in the file being checked
+  column?: number;       // 1-based; defaults to 1
+  message: string;       // what is wrong — one sentence, no rule name
+  fix: string;           // what to do instead
+}
+
+interface GateContext {
+  path: string;                    // repo-relative, POSIX separators
+  source: string;                  // full text of the file
+  changedLines: ReadonlySet<number>;  // 1-based lines this change touched
+  config: Record<string, unknown>; // the `config:` block from standard.yaml
+  ast: {                           // null for non-TS files or no compiler
+    ts: typeof import("typescript");
+    sourceFile: import("typescript").SourceFile;
+    lineOf(pos: number): number;   // 1-based line for a character offset
+    columnOf(pos: number): number; // 1-based column
+  } | null;
+}
 
 const rule = (context: GateContext): Finding[] => {
-  const parsed = context.ast;      // null for non-TS files
+  const parsed = context.ast;
   if (parsed === null) return [];
 
   const findings: Finding[] = [];
   // parsed.ts is the TypeScript compiler API; parsed.sourceFile is the AST.
-  // parsed.lineOf(pos) gives a 1-based line.
   return findings;
 };
 
 export default rule;
 ```
 
-Rules may only use `import type`. They are transpiled per file, so a value
-import would not resolve at runtime.
+**Why not import the types.** Keel does not publish a types package, so there is
+no specifier that resolves from a consuming repo. `import type { Finding,
+GateContext } from "../../src/standards/types.js"` resolves only inside the Keel
+checkout itself; in your repo it points at a `src/standards/` you do not have,
+and your editor and `tsc` both go red.
+
+This costs nothing at runtime. Rules are matched **structurally**, not by
+identity: the runner passes a plain object and reads a plain array back. And
+`import type` is erased before the rule ever runs — rules are transpiled
+single-file, so a *value* import would not resolve anyway, which is why only
+type imports are allowed at all.
+
+If you are authoring inside the Keel repository, import from
+`../../src/standards/types.js` as the shipped packs do. If you want the real
+types in your own repo, a `paths` entry in `tsconfig.json` pointing at a Keel
+checkout works and is a local editor convenience, not something to commit as a
+dependency.
 
 Python rules define a module-level `rule(context) -> list[Finding]` and may
 import from `keel_gates.model`.
@@ -90,10 +127,31 @@ import from `keel_gates.model`.
 `message` says what is wrong; `fix` says what to do instead. A finding without
 an actionable fix is a finding that gets ignored, then switched off.
 
+## A repo-local rule must be trusted before it runs
+
+A pack's `rule.ts` is code, executed in-process by the PostToolUse hook with the
+full privileges of the session. Packs shipped inside the plugin are trusted by
+construction. **A pack found in the repository being edited is not** — otherwise
+cloning a hostile repo and opening one matching file would be enough to run its
+code.
+
+```
+keel trust list           # what is untrusted, where it lives, what it hashes to
+keel trust add <pack>     # approve it
+keel trust remove <pack>  # revoke
+```
+
+Approval is keyed to the exact bytes of the rule file, so **editing your rule
+invalidates it and you approve again**. If a pack you just wrote produces no
+findings and no errors, this is the first thing to check: `keel gate` and
+`keel doctor` report an untrusted pack as *did not run*, never as *passed*.
+
 ## Checking your work
 
 - `keel check` — validates every pack, reports unresolvable globs and packs that
   declare a mode but ship nothing to run.
+- `keel gate` — runs the gates over the current diff outside the editing loop,
+  which is also how they run in CI. The fastest way to see your rule fire.
 - `keel doctor` — shows which packs are active, their timings, and their hit
   rates. A pack that has never fired in 20 runs is a candidate for deletion.
 

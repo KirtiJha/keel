@@ -6,6 +6,7 @@ import { checkSpecs } from "../../spec/check.js";
 import { deltaFor, renderDelta } from "../../spec/delta.js";
 import { activeProposals, discoverProposals, proposalForBranch } from "../../spec/discover.js";
 import { onboardInstructions, scaffoldChange } from "../../spec/scaffold.js";
+import { countRequirements, withRequirementCounts } from "../spec-counts.js";
 import { bold, detail, dim, fail, heading, info, line, ok, rows, warn } from "../output.js";
 
 /**
@@ -139,9 +140,32 @@ function specDelta(
     return 1;
   }
 
-  const rendered = renderDelta(proposal, deltaFor(options.repoRoot, proposal), {
-    withMarkers: true,
-  });
+  // `renderDelta` summarises by counting delta *sections*, so a freshly
+  // scaffolded proposal with three empty headings rendered
+  // "+ 1 added · ~ 1 modified · - 1 removed" — three requirements reported to a
+  // reviewer when none has been written. The summary is recounted here against
+  // the requirements inside each section.
+  const sections = deltaFor(options.repoRoot, proposal);
+  const rendered = withRequirementCounts(
+    renderDelta(proposal, sections, { withMarkers: true }),
+    sections,
+  );
+
+  if (options.json) {
+    const counts = countRequirements(sections);
+    line(
+      JSON.stringify({
+        change: proposal.id,
+        status: proposal.status,
+        lineCount: proposal.lineCount,
+        requirements: counts.total,
+        byKind: Object.fromEntries(counts.byKind),
+        sections: sections.length,
+        markdown: rendered,
+      }),
+    );
+    return 0;
+  }
 
   if (options.outPath !== null) {
     try {

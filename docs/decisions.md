@@ -94,8 +94,26 @@ the diff gets disabled, and a disabled gate is worse than a looser one. The
 benchmark also reports the Node spawn floor (~30 ms) separately, so the budget
 applies to Keel's own cost rather than to overhead nobody can remove.
 
-**Measured, after optimisation:** 32–73 ms p50 own-cost across the six hooks,
-against an 80 ms budget.
+**Superseded: it does not gate at all any more.** Moving from p95 to p50 was not
+enough, because the reported figure is `own = p50 − spawnFloor` — one noisy
+measurement minus another. Three consecutive CI runs on identical code produced
+3, 1 and 1 hooks over budget, and the *floor* itself moved 57 → 84 ms (47%)
+across those same runs. Subtracting two independently drifting quantities does
+not cancel the drift, it compounds it, so the result cannot distinguish a 30 ms
+regression from scheduler jitter. The job now reports and never fails; the
+reasoning above is the reason it was not simply made stricter.
+
+**What fixing it needs:** interleave the floor and hook samples so the two
+measurements share the same noise and the subtraction cancels rather than
+compounds, and decide pass/fail on a statistic with a stated confidence interval
+instead of a single p50 point estimate. Re-gate once a run on unchanged code is
+reproducibly green.
+
+**The number that used to be published here — "32–73 ms p50 own-cost across the
+six hooks" — has been removed rather than restated.** It is a single run of a
+measurement now known not to reproduce, and the README's Performance section
+gives budgets and reproduction commands instead of figures for exactly that
+reason.
 
 ---
 
@@ -179,7 +197,7 @@ Build spec §5.4 asks for this explicitly.
 | Write a speculative component-MCP client for M7 | Nothing. M7 is not started. §1 says do not write against a guessed schema. |
 | Fabricate 30 "real diffs from this repo's history" for M3 | A 35-case fixture suite that builds a real temp git repo, applies real diffs, and runs the real collector. It found three genuine bugs. |
 | Hand-write plausible gotchas for CLAUDE.md | The scanner proposes; `keel gotchas` requires per-item confirmation; nothing unconfirmed is ever written. |
-| Ship a `mode: review` reference pack for symmetry | None ships. Review mode is implemented and tested, but neither reference pack is naturally a rubric, and inventing one would be a placeholder. |
+| Ship a `mode: review` reference pack with invented content | `migration-safety` ships and is a real rubric: reversibility, deployability ahead of the code, lock duration, backfill separation. Those are properties of migrations, not of one org's policy, which is why this one could be written honestly and a `guide` pack still cannot. |
 | Mock the Python side in TypeScript tests | Real subprocesses throughout, in both directions. |
 | Assert `expect(x).toBeDefined()` where behaviour was awkward to check | Real assertions. The one place tempted — the router's caller counting — got a real fixture repo with seven real callers instead. |
 
@@ -407,3 +425,42 @@ stand-in for an endpoint someone still owes us.
 Constraint 0.6 already forbade network calls inside hooks. Local-only extends
 that to the whole tool, which means the redaction layer is now defence in depth
 rather than the only thing between a secret and a wire.
+
+---
+
+## 17. `plugin.json` declares no `agents`, and should not start
+
+**The problem.** Claude Code auto-discovers `agents/` at a plugin's root when
+`plugin.json` carries no `agents` key, and **plugin-packaged subagents cannot use
+`permissionMode`, `hooks` or `mcpServers`**. `agents/keel-reviewer.md` sets
+`permissionMode: acceptEdits`. So it is shipped twice with different
+capabilities: once by the plugin loader, where that line is silently dropped,
+and once by `keel init`, which copies it into the repo's own `.claude/agents/`
+where the line works. The comment in `init.ts` already knew this — the file
+lives there *because* it needs privileged frontmatter — but the plugin root
+still carried a copy that quietly did not.
+
+**Decided: no `agents` key, and the template moves out of `agents/`.** Once the
+directory is gone from the plugin root there is nothing to auto-discover, and
+that is the correct end state. Adding an explicit `"agents": "./templates/agents"`
+would be actively worse than adding nothing: it would re-register the exact file
+that cannot carry its own `permissionMode`, restoring the bug with a declaration
+that makes it look deliberate.
+
+The alternative — declaring an empty `agents` list to document the intent —
+depends on how the loader treats a declared path relative to the default
+directory, and a manifest key whose meaning we are guessing at is not
+documentation. Absence is unambiguous.
+
+**Consequence, and what to check:** `keel init` remains the only installer of
+subagents, which is what makes `permissionMode` real. If a subagent is ever
+written that needs none of the privileged frontmatter, it can be plugin-packaged
+— and that is the point at which an explicit `agents` declaration is worth
+adding, for that file and not for `keel-reviewer`.
+
+**State at the time of writing:** `agents/keel-reviewer.md` is still at the
+plugin root; the move to `templates/agents/` is in flight separately.
+`package.json` already lists `templates` in `files` so the template ships once it
+lands, and `installAgents()` in `src/cli/commands/init.ts` still reads
+`<pluginRoot>/agents` — that path has to move with the file or `keel init`
+installs nothing.

@@ -31,6 +31,15 @@ export interface TestFact {
   readonly matchers: readonly string[];
   readonly skipped: boolean;
   readonly focused: boolean;
+  /**
+   * True for a grouping declaration (`describe`, `suite`, `context`).
+   *
+   * A group that happens to contain no inner `it` — only a `beforeEach`, or
+   * tests registered by a helper call — survives the leaf filter below, and
+   * without this flag gate 4 reported `test "suite" asserts nothing` about a
+   * block that was never a test.
+   */
+  readonly suite: boolean;
 }
 
 export interface TestFileAnalysis {
@@ -96,8 +105,100 @@ interface TestRange {
   readonly end: number;
   readonly skipped: boolean;
   readonly focused: boolean;
+  readonly suite: boolean;
   assertions: number;
   matchers: string[];
+}
+
+/** Declarations that group tests rather than being one. */
+const SUITE_ROOTS = new Set(["describe", "suite", "context", "fdescribe", "xdescribe"]);
+
+/** A named function in the test file, as a source range. */
+interface FunctionRange {
+  readonly name: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+interface CallSite {
+  readonly name: string;
+  readonly pos: number;
+}
+
+const within = (pos: number, start: number, end: number): boolean => pos >= start && pos <= end;
+
+/**
+ * Local functions that assert, directly or through another local function.
+ *
+ * A shared expectation helper is the normal way to keep a suite readable:
+ *
+ * ```ts
+ * function expectValidUser(u) { expect(u.ok).toBe(true); }
+ * it("registers a user", () => expectValidUser(register()));
+ * ```
+ *
+ * Counting assertions only inside a test's own source range calls that test
+ * assertion-free and blocks the edit. Nothing here crosses a file boundary —
+ * a call to a function *defined in this file* whose body asserts is enough,
+ * and anything else stays a miss rather than a false block.
+ */
+function assertingFunctions(
+  functions: readonly FunctionRange[],
+  calls: readonly CallSite[],
+  assertions: ReadonlyArray<{ readonly pos: number }>,
+): ReadonlySet<string> {
+  const asserting = new Set<string>();
+  for (const fn of functions) {
+    if (assertions.some((a) => within(a.pos, fn.start, fn.end))) asserting.add(fn.name);
+  }
+
+  // Helpers that delegate to other helpers. Depth is bounded because a chain
+  // deeper than this does not occur and an unbounded fixpoint over a
+  // pathological file is a hook-latency problem.
+  for (let pass = 0; pass < 8; pass++) {
+    let grew = false;
+    for (const fn of functions) {
+      if (asserting.has(fn.name)) continue;
+      const delegates = calls.some(
+        (c) => c.name !== fn.name && asserting.has(c.name) && within(c.pos, fn.start, fn.end),
+      );
+      if (delegates) {
+        asserting.add(fn.name);
+        grew = true;
+      }
+    }
+    if (!grew) break;
+  }
+
+  return asserting;
+}
+
+/** Name and range of a function-shaped declaration, or null. */
+function namedFunction(ts: typeof TS, node: TS.Node, sf: TS.SourceFile): FunctionRange | null {
+  const isFunctionLike = (n: TS.Node | undefined): boolean =>
+    n !== undefined && (ts.isArrowFunction(n) || ts.isFunctionExpression(n));
+
+  if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
+    return { name: node.name.text, start: node.getStart(sf), end: node.getEnd() };
+  }
+  if (
+    ts.isVariableDeclaration(node) &&
+    ts.isIdentifier(node.name) &&
+    isFunctionLike(node.initializer)
+  ) {
+    return { name: node.name.text, start: node.getStart(sf), end: node.getEnd() };
+  }
+  if (
+    ts.isPropertyAssignment(node) &&
+    ts.isIdentifier(node.name) &&
+    isFunctionLike(node.initializer)
+  ) {
+    return { name: node.name.text, start: node.getStart(sf), end: node.getEnd() };
+  }
+  if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
+    return { name: node.name.text, start: node.getStart(sf), end: node.getEnd() };
+  }
+  return null;
 }
 
 /** Analyse a TypeScript/JavaScript test file. */
@@ -122,10 +223,24 @@ export async function analyseTypeScriptTests(
   let unnamedOrdinal = 0;
   const allMatchers: string[] = [];
   const looseAssertions: Array<{ pos: number }> = [];
+  const functions: FunctionRange[] = [];
+  const calls: CallSite[] = [];
 
   const visit = (node: TS.Node): void => {
+    const fn = namedFunction(ts, node, sourceFile);
+    if (fn !== null) functions.push(fn);
+
     if (ts.isCallExpression(node)) {
       const calleeText = dotted(ts, node.expression, sourceFile);
+
+      // Every call site, for the shared-helper pass below.
+      const callee = node.expression;
+      const calleeName = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee)
+          ? callee.name.text
+          : "";
+      if (calleeName !== "") calls.push({ name: calleeName, pos: node.getStart(sourceFile) });
       const root = calleeText.split(".")[0] ?? "";
       const modifier = calleeText.split(".").slice(1).join(".");
 
@@ -176,6 +291,7 @@ export async function analyseTypeScriptTests(
             FOCUSED_DECLARATIONS.has(declarationText) ||
             ONLY_MODIFIERS.has(declarationModifier) ||
             declarationModifier.startsWith("only."),
+          suite: SUITE_ROOTS.has(declarationText.split(".")[0] ?? ""),
           assertions: 0,
           matchers: [],
         });
@@ -225,6 +341,18 @@ export async function analyseTypeScriptTests(
     if (best !== null) best.matchers.push(matcher);
   }
 
+  // A test whose assertions live in a shared helper still asserts.
+  const asserting = assertingFunctions(functions, calls, looseAssertions);
+  if (asserting.size > 0) {
+    for (const range of ranges) {
+      if (range.assertions > 0) continue;
+      const delegates = calls.some(
+        (c) => asserting.has(c.name) && within(c.pos, range.start, range.end),
+      );
+      if (delegates) range.assertions = 1;
+    }
+  }
+
   // Only leaf tests count; a `describe` wrapper is not a test.
   const leaves = ranges.filter(
     (range) => !ranges.some((other) => other !== range && other.start > range.start && other.end < range.end),
@@ -238,6 +366,7 @@ export async function analyseTypeScriptTests(
       matchers: range.matchers,
       skipped: range.skipped,
       focused: range.focused,
+      suite: range.suite,
     })),
     totalAssertions: looseAssertions.length,
     mockedModules,
@@ -278,7 +407,9 @@ export function analysePythonTests(
   try {
     const payload = JSON.parse(res.value.stdout) as PythonAnalysisPayload;
     return {
-      tests: payload.tests,
+      // Python reports test *functions* only — a class is walked into rather
+      // than reported — so nothing coming back from it is a grouping block.
+      tests: payload.tests.map((t) => ({ ...t, suite: false })),
       totalAssertions: payload.total_assertions,
       mockedModules: payload.mocked_modules,
       matchers: payload.matchers,

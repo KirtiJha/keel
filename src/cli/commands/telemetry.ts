@@ -1,7 +1,7 @@
 import { loadConfigOrDefaults } from "../../shared/config.js";
 import { readSpool, trackDistribution } from "../../telemetry/spool.js";
 import { archiveSpool, gateStats, shipToFile, tddStats } from "../../telemetry/ship.js";
-import { fail, heading, info, line, ok, rows } from "../output.js";
+import { detail, fail, heading, info, json, line, ok, rows } from "../output.js";
 
 /**
  * `keel telemetry <show|ship|clear>`.
@@ -12,17 +12,40 @@ import { fail, heading, info, line, ok, rows } from "../output.js";
  * person reading `keel telemetry show` in their own repo answers that without
  * anyone's telemetry leaving their machine.
  */
+
+export interface TelemetryOptions {
+  readonly json?: boolean;
+}
+
 export function telemetry(
   repoRoot: string,
   subcommand: string | null,
   destination: string | null,
+  options: TelemetryOptions = {},
 ): number {
   const { config } = loadConfigOrDefaults(repoRoot);
   const events = readSpool(repoRoot, config);
+  const asJson = options.json === true;
 
   switch (subcommand) {
     case "show":
     case null: {
+      const distribution = trackDistribution(events);
+      const gates = gateStats(events);
+      const tdd = tddStats(events);
+
+      if (asJson) {
+        json({
+          sink: config.telemetry.sink,
+          path: config.telemetry.path,
+          events: events.length,
+          tracks: distribution,
+          gates,
+          tddGates: tdd,
+        });
+        return 0;
+      }
+
       heading("Telemetry");
       rows([
         ["sink", config.telemetry.sink],
@@ -36,7 +59,6 @@ export function telemetry(
         return 0;
       }
 
-      const distribution = trackDistribution(events);
       if (distribution.total > 0) {
         heading("Tracks");
         rows([
@@ -46,13 +68,11 @@ export function telemetry(
         ]);
       }
 
-      const gates = gateStats(events);
       if (gates.length > 0) {
         heading("Gates");
         rows(gates.map((g) => [g.pack, `${g.failures}/${g.runs}`]));
       }
 
-      const tdd = tddStats(events);
       if (tdd.length > 0) {
         heading("TDD gates");
         rows(tdd.map((t) => [t.gate, `${t.trips} trips, ${t.overrides} overridden`]));
@@ -63,10 +83,21 @@ export function telemetry(
     }
 
     case "ship": {
-      heading("Ship");
       const result = shipToFile(repoRoot, config, destination ?? undefined);
+
+      if (asJson) {
+        json(
+          result.ok
+            ? { ok: true, events: result.value.events, bundlePath: result.value.bundlePath, transmitted: false }
+            : { ok: false, error: result.error },
+        );
+        return result.ok ? 0 : 1;
+      }
+
+      heading("Ship");
       if (!result.ok) {
         fail(result.error);
+        detail(`fix: check that ${destination ?? config.telemetry.path} is writable, or pass --to <path>`);
         line();
         return 1;
       }
@@ -78,10 +109,17 @@ export function telemetry(
     }
 
     case "clear": {
-      heading("Clear");
       const archived = archiveSpool(repoRoot, config);
+
+      if (asJson) {
+        json(archived.ok ? { ok: true, archived: archived.value } : { ok: false, error: archived.error });
+        return archived.ok ? 0 : 1;
+      }
+
+      heading("Clear");
       if (!archived.ok) {
         fail(archived.error);
+        detail(`fix: check that ${config.telemetry.path} is writable`);
         line();
         return 1;
       }

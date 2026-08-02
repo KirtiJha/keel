@@ -44,19 +44,59 @@ export type Rule = (context: GateContext) => Finding[] | Promise<Finding[]>;
 export type { PackMode, Severity } from "./schema.js";
 import type { Severity } from "./schema.js";
 
+/**
+ * What became of one pack over one file.
+ *
+ * `ok` is the only value that means "this pack looked at the change". The other
+ * three are all "no verdict", and they are distinguished because a gate that
+ * did not run must never be reported as a gate that passed.
+ *
+ *   ok        — the rule ran to completion (with or without findings)
+ *   error     — the rule threw, timed out, or would not load
+ *   untrusted — a repo-local rule this repo has not approved (see `trust.ts`)
+ *   skipped   — the run's whole-file budget ran out before this pack started
+ */
+export type GateStatus = "ok" | "error" | "untrusted" | "skipped";
+
 export interface GateResult {
   readonly pack: string;
   readonly severity: Severity;
   readonly findings: readonly ReportedFinding[];
   readonly durationMs: number;
-  /** Set when the rule itself failed. Never blocks; logged and reported. */
+  readonly status: GateStatus;
+  /** Set when `status` is `error`. Never blocks; logged and reported. */
   readonly error?: string;
+  /** Why a pack did not run, when `status` is `untrusted` or `skipped`. */
+  readonly detail?: string;
 }
 
 export interface ReportedFinding extends Finding {
   readonly pack: string;
   readonly severity: Severity;
   readonly path: string;
+}
+
+/**
+ * Which packs actually produced a verdict for this file.
+ *
+ * The hook needs this to tell "standards passed" from "standards did not run".
+ * `complete` is the one-boolean answer — pass it as the `ok` of the recorded
+ * check — and `detail` is a ready-made explanation for the cases where it is
+ * false ("1 errored (thrower)"), empty otherwise.
+ */
+export interface GateHealth {
+  /** Packs whose rule ran to completion. */
+  readonly ran: readonly string[];
+  /** Packs whose rule threw, timed out, or would not load. */
+  readonly errored: readonly string[];
+  /** Repo-local packs not approved to run here. */
+  readonly untrusted: readonly string[];
+  /** Packs dropped: the whole-file budget ran out, or the file was too large. */
+  readonly skipped: readonly string[];
+  /** True when every applicable pack produced a verdict. */
+  readonly complete: boolean;
+  /** One line naming what did not run. Empty when `complete`. */
+  readonly detail: string;
 }
 
 /** Aggregated outcome for one file across every applicable pack. */
@@ -68,4 +108,5 @@ export interface GateRunSummary {
   /** `medium` and `low` — reported, never blocking. */
   readonly advisory: readonly ReportedFinding[];
   readonly durationMs: number;
+  readonly health: GateHealth;
 }

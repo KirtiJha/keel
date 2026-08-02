@@ -63,6 +63,8 @@ export const KeelConfigSchema = z
         force_full_globs: GlobList.default([]),
         quick_max_files: z.number().int().min(1).default(1),
         quick_max_lines: z.number().int().min(1).default(50),
+        standard_max_files: z.number().int().min(1).default(40),
+        standard_max_lines: z.number().int().min(1).default(2000),
         escalate_caller_threshold: z.number().int().min(0).default(5),
         package_roots: GlobList.default([...DEFAULT_PACKAGE_ROOTS]),
       })
@@ -70,6 +72,8 @@ export const KeelConfigSchema = z
         force_full_globs: [],
         quick_max_files: 1,
         quick_max_lines: 50,
+        standard_max_files: 40,
+        standard_max_lines: 2000,
         escalate_caller_threshold: 5,
         package_roots: [...DEFAULT_PACKAGE_ROOTS],
       }),
@@ -174,6 +178,8 @@ const FIELD_HELP: Readonly<Record<string, string>> = {
   "repo.languages": "list the languages in this repo, e.g. `languages: [typescript, python]`",
   "router.quick_max_files": "a positive integer — the file count above which quick is not offered",
   "router.quick_max_lines": "a positive integer — the changed-line count above which quick is not offered",
+  "router.standard_max_files": "a positive integer — the file count above which a change is full track on size alone",
+  "router.standard_max_lines": "a positive integer — the changed-line count above which a change is full track on size alone",
   "router.escalate_caller_threshold":
     "a non-negative integer — external callers above this escalate off quick",
   "router.force_full_globs": 'a list of globs, e.g. `- "**/migrations/**"`',

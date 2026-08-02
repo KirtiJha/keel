@@ -77,6 +77,25 @@ export function classify(signals: ChangeSignals, config: KeelConfig): RouteResul
     naturalReasons.push(
       `${fileCount} file${fileCount === 1 ? "" : "s"}, ${lineCount} line${lineCount === 1 ? "" : "s"}, no exported signature change`,
     );
+  } else if (
+    fileCount > config.router.standard_max_files ||
+    lineCount > config.router.standard_max_lines
+  ) {
+    // Size alone used to top out at `standard`: only a forced path or a
+    // widely-called symbol crossing a package boundary could reach full, so a
+    // 60-file, 9,000-line change was routed like a three-file one. Past a point
+    // the size *is* the risk, whatever the change touches.
+    natural = "full";
+    if (fileCount > config.router.standard_max_files) {
+      naturalReasons.push(
+        `${fileCount} files changed (over ${config.router.standard_max_files} — full track on size alone)`,
+      );
+    }
+    if (lineCount > config.router.standard_max_lines) {
+      naturalReasons.push(
+        `${lineCount} lines changed (over ${config.router.standard_max_lines} — full track on size alone)`,
+      );
+    }
   } else {
     natural = "standard";
     if (fileCount > config.router.quick_max_files) {

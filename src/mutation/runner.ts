@@ -109,6 +109,14 @@ export async function runMutation(options: RunOptions): Promise<MutationReport> 
     note,
   });
 
+  /** Same shape as `empty`, but this one does not pass. */
+  const failed = (note: string, testCommand: string): MutationReport => ({
+    ...empty(note, testCommand),
+    score: 0,
+    passed: false,
+  });
+
+  const unresolved: string[] = [];
   const command = resolveTestCommand(root, config);
   if (command === null) {
     return empty(
@@ -128,15 +136,33 @@ export async function runMutation(options: RunOptions): Promise<MutationReport> 
     const source = readWorkingFile(root, file.path);
     if (source === null) continue;
 
+    // The file list comes from `--against`, so the line set must too. Reading
+    // it against HEAD meant that on any CI checkout — where the tree is clean —
+    // every file yielded an empty set, no mutants were generated, and the gate
+    // reported a perfect score without testing anything.
+    const lines = changedLines(root, file.path, options.against ?? null);
+    if (!lines.known) {
+      unresolved.push(`${file.path}: ${lines.reason}`);
+      continue;
+    }
+
     candidates.push(
       ...(await generateMutants(file.path, source, {
-        changedLines: changedLines(root, file.path),
+        changedLines: lines.lines,
         pluginRoot: options.pluginRoot,
       })),
     );
   }
 
   if (candidates.length === 0) {
+    // "Nothing to mutate" and "we could not work out what changed" are
+    // different answers, and only the first one is a pass.
+    if (unresolved.length > 0) {
+      return failed(
+        `could not determine changed lines for ${unresolved.length} file(s): ${unresolved.slice(0, 3).join("; ")}`,
+        command,
+      );
+    }
     return empty("no mutable changed lines in this diff", command);
   }
 
@@ -219,6 +245,21 @@ export async function runMutation(options: RunOptions): Promise<MutationReport> 
   const scored = killed + survived;
   const score = scored === 0 ? 1 : killed / scored;
 
+  // Errors leave the denominator, which is right — an unapplied mutant proves
+  // nothing either way — but it means a run where most mutants errored can post
+  // a flattering score off the handful that survived. That is not a measurement,
+  // so past a threshold the run reports no confidence rather than a pass.
+  const errorShare = results.length === 0 ? 0 : errored / results.length;
+  const tooManyErrors = errorShare > 0.5;
+
+  const notes: string[] = [];
+  if (errored > 0) {
+    notes.push(`${errored} of ${results.length} mutants errored and are excluded from the score`);
+  }
+  if (tooManyErrors) {
+    notes.push("more than half errored — treat this run as inconclusive, not as a pass");
+  }
+
   return {
     results,
     killed,
@@ -227,8 +268,9 @@ export async function runMutation(options: RunOptions): Promise<MutationReport> 
     total: results.length,
     score,
     minScore: config.mutation.min_score,
-    passed: score >= config.mutation.min_score,
+    passed: !tooManyErrors && score >= config.mutation.min_score,
     testCommand: command,
     durationMs: total(),
+    ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
   };
 }

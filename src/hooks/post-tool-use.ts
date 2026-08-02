@@ -39,13 +39,16 @@ await runHook(
         kind: "gate",
         pack: result.pack,
         severity: result.severity,
-        result: result.error !== undefined
-          ? "error"
-          : result.findings.length === 0
-            ? "pass"
-            : result.severity === "high"
-              ? "fail"
-              : "warn",
+        // A pack that did not run must not be recorded as one that passed.
+        result: result.status === "untrusted" || result.status === "skipped"
+          ? result.status
+          : result.error !== undefined
+            ? "error"
+            : result.findings.length === 0
+              ? "pass"
+              : result.severity === "high"
+                ? "fail"
+                : "warn",
         finding_count: result.findings.length,
         duration_ms: result.durationMs,
       });
@@ -85,9 +88,22 @@ await runHook(
     }
 
     // ---- everything passed: say nothing ----
+    //
+    // "The gates passed" and "the gates did not run" used to be the same green
+    // tick, because this only counted results. A pack whose rule threw, whose
+    // compiled artifact was corrupt, or which is not approved to run produces a
+    // result too — so a dead gate reported success. `health.complete` is false
+    // whenever an applicable pack reached no verdict, and `health.detail` says
+    // which.
     const checkedStandards = gates.results.length > 0;
     const checkedTdd = tdd.skipped === null && tdd.outcomes.length > 0;
-    if (checkedStandards) recordCheck(context.repoRoot, relPath, { label: "standards", ok: true });
+    if (checkedStandards) {
+      recordCheck(context.repoRoot, relPath, {
+        label: "standards",
+        ok: gates.health.complete,
+        ...(gates.health.detail === "" ? {} : { detail: gates.health.detail }),
+      });
+    }
     if (checkedTdd) recordCheck(context.repoRoot, relPath, { label: "tdd", ok: true });
     if (!checkedStandards && !checkedTdd) recordCheck(context.repoRoot, relPath, null);
 

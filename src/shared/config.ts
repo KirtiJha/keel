@@ -41,6 +41,9 @@ export interface KeelConfig {
     readonly force_full_globs: readonly string[];
     readonly quick_max_files: number;
     readonly quick_max_lines: number;
+    /** Above either of these a change is full track on size alone. */
+    readonly standard_max_files: number;
+    readonly standard_max_lines: number;
     readonly escalate_caller_threshold: number;
     readonly package_roots: readonly string[];
   };
@@ -142,6 +145,13 @@ export function defaultConfig(
       force_full_globs: [],
       quick_max_files: 1,
       quick_max_lines: 50,
+      // Size alone used to top out at `standard`: a 60-file, 9,000-line change
+      // with no forced path and no widely-called symbol routed the same as a
+      // three-file one. These are deliberately high — the common large change is
+      // a rename or a formatting sweep, and neither wants a proposal — but past
+      // them "read the whole thing before it lands" is the honest answer.
+      standard_max_files: 40,
+      standard_max_lines: 2000,
       escalate_caller_threshold: 5,
       package_roots: [...DEFAULT_PACKAGE_ROOTS],
     },
@@ -203,6 +213,16 @@ export function readConfigValue(raw: unknown, repoName = "unknown"): KeelConfig 
       force_full_globs: asStringArray(at(raw, "router", "force_full_globs"), base.router.force_full_globs),
       quick_max_files: asInt(at(raw, "router", "quick_max_files"), base.router.quick_max_files, 1),
       quick_max_lines: asInt(at(raw, "router", "quick_max_lines"), base.router.quick_max_lines, 1),
+      standard_max_files: asInt(
+        at(raw, "router", "standard_max_files"),
+        base.router.standard_max_files,
+        1,
+      ),
+      standard_max_lines: asInt(
+        at(raw, "router", "standard_max_lines"),
+        base.router.standard_max_lines,
+        1,
+      ),
       escalate_caller_threshold: asInt(
         at(raw, "router", "escalate_caller_threshold"),
         base.router.escalate_caller_threshold,

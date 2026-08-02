@@ -16,6 +16,8 @@ a score that means nothing.
 from __future__ import annotations
 
 import ast
+import bisect
+import re
 from typing import Any
 
 from .model import read_request, write_response
@@ -40,21 +42,89 @@ _BINOP: dict[type[ast.operator], tuple[str, str, str]] = {
 }
 
 
+#: What Python's tokenizer treats as a line break — and nothing else.
+_LINE_END = re.compile(r"\r\n|\r|\n")
+
+
+def _split_lines(source: str) -> list[str]:
+    """Split ``source`` into lines the way Python's tokenizer does.
+
+    ``str.splitlines`` also breaks on ``\\x0b``, ``\\x0c``, ``\\x1c``-``\\x1e``,
+    ``\\x85``, ``\\u2028`` and ``\\u2029``. Python does not: one of those inside
+    a string literal would shift every line number after it out of step with
+    what ``ast`` reports.
+    """
+    lines: list[str] = []
+    start = 0
+    for match in _LINE_END.finditer(source):
+        lines.append(source[start : match.end()])
+        start = match.end()
+    if start < len(source):
+        lines.append(source[start:])
+    return lines
+
+
+def _byte_to_char(line: str) -> list[int] | None:
+    """Character index for every byte offset in ``line``, or ``None`` if ASCII.
+
+    An ASCII line needs no table: byte offset and character offset are equal,
+    which is both the common case and the fast path.
+    """
+    if line.isascii():
+        return None
+    table: list[int] = []
+    for index, char in enumerate(line):
+        table.extend([index] * len(char.encode("utf-8")))
+    # One past the end, so a span that reaches the end of the line maps cleanly.
+    table.append(len(line))
+    return table
+
+
 class _Offsets:
-    """Translate (lineno, col_offset) into absolute character offsets."""
+    """Translate ast's ``(lineno, col_offset)`` into absolute character offsets.
+
+    ``ast`` reports ``col_offset``/``end_col_offset`` as **UTF-8 byte** offsets
+    into the line, while every offset on the wire — and every index into
+    ``source`` — is a **character** offset. The two diverge the moment a line
+    contains anything outside ASCII, so each line carries a byte-to-character
+    table and both spaces are tracked separately.
+    """
 
     def __init__(self, source: str) -> None:
+        #: Character offset of the start of each line.
         self._starts: list[int] = []
+        #: Length of each line, in characters.
+        self._lengths: list[int] = []
+        #: Byte-to-character table per line; ``None`` for ASCII-only lines.
+        self._tables: list[list[int] | None] = []
         offset = 0
-        for line in source.splitlines(keepends=True):
+        for line in _split_lines(source):
             self._starts.append(offset)
+            self._lengths.append(len(line))
+            self._tables.append(_byte_to_char(line))
             offset += len(line)
-        self._source = source
 
     def at(self, lineno: int, col: int) -> int:
-        if lineno < 1 or lineno > len(self._starts):
+        """Absolute character offset of byte column ``col`` on line ``lineno``."""
+        if lineno < 1 or lineno > len(self._starts) or col < 0:
             return -1
-        return self._starts[lineno - 1] + col
+        index = lineno - 1
+        table = self._tables[index]
+        if table is None:
+            column = min(col, self._lengths[index])
+        elif col < len(table):
+            column = table[col]
+        else:
+            column = self._lengths[index]
+        return self._starts[index] + column
+
+    def line_at(self, offset: int) -> int:
+        """1-based line number containing character offset ``offset``.
+
+        Counting ``\\n`` would disagree with :func:`_split_lines` on a file with
+        old-style ``\\r`` line endings; this cannot.
+        """
+        return bisect.bisect_right(self._starts, offset)
 
     def span(self, node: ast.AST) -> tuple[int, int]:
         lineno = getattr(node, "lineno", 0)
@@ -64,6 +134,53 @@ class _Offsets:
         if end_lineno is None or end_col is None:
             return (-1, -1)
         return (self.at(lineno, col), self.at(end_lineno, end_col))
+
+
+def _parses(source: str) -> bool:
+    """Whether ``source`` is valid Python."""
+    try:
+        compile(source, "<mutant>", "exec", ast.PyCF_ONLY_AST)
+    except (SyntaxError, ValueError):
+        return False
+    return True
+
+
+class _Units:
+    """Smallest self-contained parse unit around each offset.
+
+    Every mutant is re-parsed before it is emitted. Re-parsing the whole file
+    each time is O(file x mutants), which on a large new file overruns the 15 s
+    the TypeScript side gives this process — and a timeout there means *no*
+    mutants at all.
+
+    A module-level statement is a self-contained parse unit: it starts at the
+    beginning of a logical line, and it cannot contain an unbalanced bracket or
+    quote (or it would have swallowed the statement after it). So if such a
+    statement parses on its own, and still parses with a mutation applied inside
+    it, the file containing it does too. Statements that do *not* parse in
+    isolation are simply not registered, and those mutants fall back to
+    re-parsing the whole source.
+    """
+
+    def __init__(self, tree: ast.Module, offsets: _Offsets, source: str) -> None:
+        self._source = source
+        self._spans: list[tuple[int, int]] = []
+        for stmt in tree.body:
+            start, end = offsets.span(stmt)
+            if 0 <= start < end <= len(source) and _parses(source[start:end]):
+                self._spans.append((start, end))
+        self._starts = [start for start, _ in self._spans]
+
+    def parses_with(self, start: int, end: int, replacement: str) -> bool:
+        """Whether the file still parses with ``source[start:end]`` replaced."""
+        index = bisect.bisect_right(self._starts, start) - 1
+        if index >= 0:
+            unit_start, unit_end = self._spans[index]
+            if unit_start <= start and end <= unit_end:
+                unit = self._source[unit_start:unit_end]
+                mutated = unit[: start - unit_start] + replacement + unit[end - unit_start :]
+                return _parses(mutated)
+        return _parses(self._source[:start] + replacement + self._source[end:])
 
 
 def _find_operator(source: str, start: int, end: int, token: str) -> tuple[int, int] | None:
@@ -96,13 +213,14 @@ def generate(path: str, source: str, changed: frozenset[int]) -> list[dict[str, 
         return []
 
     offsets = _Offsets(source)
+    units = _Units(tree, offsets, source)
     mutants: list[dict[str, Any]] = []
     seen: set[tuple[int, int, str]] = set()
 
     def emit(start: int, end: int, replacement: str, operator: str) -> None:
-        if start < 0 or end < 0 or start >= end:
+        if start < 0 or end < 0 or start >= end or end > len(source):
             return
-        line = source.count("\n", 0, start) + 1
+        line = offsets.line_at(start)
         if line not in changed:
             return
         original = source[start:end]
@@ -112,6 +230,12 @@ def generate(path: str, source: str, changed: frozenset[int]) -> list[dict[str, 
         if key in seen:
             return
         seen.add(key)
+        # Defence in depth. A mutant that does not compile can never be
+        # legitimately killed: the test command fails on the SyntaxError, the
+        # runner reads any failure as a kill, and a mutant that was never
+        # really applied inflates the score. Drop it instead.
+        if not units.parses_with(start, end, replacement):
+            return
         mutants.append(
             {
                 "line": line,

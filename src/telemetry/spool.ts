@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
-import type { KeelConfig } from "../shared/config.js";
-import { logDebug } from "../shared/log.js";
+import { DEFAULT_TELEMETRY_PATH, type KeelConfig } from "../shared/config.js";
+import { logDebug, logWarn } from "../shared/log.js";
+import { resolveConfiguredPath } from "../shared/paths.js";
 
 import {
   parseEvent,
@@ -39,8 +40,22 @@ export function setSessionId(id: string): void {
   process.env["KEEL_SESSION_ID"] = id;
 }
 
+/**
+ * Where the spool lives.
+ *
+ * `telemetry.path` is documented as "a repo-relative directory", and that is
+ * enforced here rather than assumed: `resolve` alone honoured both
+ * `../../../../tmp/evil` and `/tmp/evil`, creating directories and writing
+ * `events-*.jsonl` outside the working tree. An escaping value is logged once
+ * and replaced with the default — telemetry keeps recording, in the right place.
+ */
 export function spoolDir(root: string, config: KeelConfig): string {
-  return resolve(root, config.telemetry.path);
+  const resolved = resolveConfiguredPath(root, config.telemetry.path, {
+    key: "telemetry.path",
+    fallback: DEFAULT_TELEMETRY_PATH,
+  });
+  if (!resolved.ok) logWarn(resolved.error ?? "telemetry.path is not inside the repository");
+  return resolved.path;
 }
 
 function todayFile(dir: string): string {

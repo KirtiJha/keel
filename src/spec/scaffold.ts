@@ -1,12 +1,12 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import type { KeelConfig } from "../shared/config.js";
 import { exec } from "../shared/exec.js";
 import { isDirectory } from "../shared/paths.js";
 import { errorMessage, type Result, err, ok } from "../shared/result.js";
 
-import { changesDir } from "./discover.js";
+import { changesDir, specRoot } from "./discover.js";
 
 /**
  * Scaffolding a change.
@@ -89,9 +89,16 @@ export function scaffoldChange(
 /**
  * Brownfield bootstrap (plan rule 1).
  *
- * `/opsx:onboard` is OpenSpec's command and extracting specs from existing code
- * is its job — reimplementing it would put two owners on the design phase. Keel
- * checks that OpenSpec is installed and hands over.
+ * Brownfield bootstrap belongs to OpenSpec, and Keel only checks that OpenSpec
+ * is installed before handing over — reimplementing it would put two owners on
+ * the design phase.
+ *
+ * What it is *not*: `/opsx:onboard` does not read a legacy service and emit
+ * specs describing it. OpenSpec's own docs describe a guided walkthrough that
+ * produces one small real change, and it ships nothing that generates specs
+ * from existing code. It is also expanded-profile only, so on a default install
+ * the command is absent entirely. Saying otherwise sent people looking for a
+ * feature that does not exist.
  */
 export function onboardInstructions(root: string, config: KeelConfig): string[] {
   const available = openspecAvailable(root);
@@ -104,14 +111,26 @@ export function onboardInstructions(root: string, config: KeelConfig): string[] 
     lines.push("");
   }
 
-  lines.push("Brownfield bootstrap is OpenSpec's `/opsx:onboard`, run once per repo:");
+  // The *contained* spec root, not the raw config value: telling someone to
+  // commit under a directory Keel has rejected is worse than saying nothing.
+  const dir = relative(root, specRoot(root, config)).split(/[\\/]/).join("/");
+
+  lines.push("There is no command that reads this codebase and writes specs for it.");
+  lines.push("OpenSpec does not ship one, and neither does Keel. A legacy repo");
+  lines.push("accretes specs one change at a time:");
   lines.push("");
-  lines.push("  1. Run `/opsx:onboard` in Claude Code and point it at the service.");
-  lines.push("  2. Review every generated spec by hand before committing it.");
-  lines.push("  3. Commit the result under `" + config.spec.dir + "/specs/`.");
+  lines.push("  1. Take the next real change you were going to make anyway.");
+  lines.push("  2. `keel spec new <id>` scaffolds the proposal; describe only what");
+  lines.push("     that change alters, not the system around it.");
+  lines.push("  3. Build it, then archive — the delta folds into `" + dir + "/specs/`.");
   lines.push("");
-  lines.push("Do not hand-write specs for existing behaviour, and do not let the");
-  lines.push("generated output land unreviewed — a wrong spec is worse than none.");
+  lines.push("After a few changes the specs cover the parts under active development,");
+  lines.push("which are the parts worth specifying. The rest stays undocumented, and");
+  lines.push("that is the correct trade: a spec nobody derived from real work is a");
+  lines.push("guess, and a wrong spec is worse than none.");
+  lines.push("");
+  lines.push("`/opsx:onboard` is a guided walkthrough of that loop on one small change.");
+  lines.push("It is expanded-profile only — `openspec config profile` if it is missing.");
 
   return lines;
 }

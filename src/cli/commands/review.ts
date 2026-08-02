@@ -4,7 +4,9 @@ import { renderRubrics, rubricsFor } from "../../standards/context.js";
 import { deltaFor, renderDelta } from "../../spec/delta.js";
 import { proposalForBranch } from "../../spec/discover.js";
 import { record } from "../../telemetry/spool.js";
-import { bold, detail, dim, fail, heading, info, line, ok, rows } from "../output.js";
+import { assembleDiff } from "../diff-text.js";
+import { countRequirements, withRequirementCounts } from "../spec-counts.js";
+import { bold, detail, dim, fail, heading, info, json, line, ok, rows } from "../output.js";
 
 /**
  * `keel review` — assemble the review chain's input.
@@ -13,7 +15,7 @@ import { bold, detail, dim, fail, heading, info, line, ok, rows } from "../outpu
  * `/security-review`, `/verify`, plus managed Code Review on the PR. Keel does
  * not reimplement any of them (rule 7 puts review with the built-ins and our
  * rubric). What Keel contributes is the *input*: which rubrics apply to the
- * paths this change touches, and the spec delta if there is one.
+ * paths this change touches, the spec delta if there is one, and the diff.
  *
  * Filtering matters. A review prompt carrying every rubric the org owns is a
  * prompt the model skims.
@@ -26,6 +28,7 @@ export interface ReviewOptions {
   readonly track: Track | null;
   /** Emit only the assembled prompt, for piping into a command or agent. */
   readonly promptOnly: boolean;
+  readonly json?: boolean;
 }
 
 /** The order the chain runs in, and why. */
@@ -38,9 +41,15 @@ const CHAIN: ReadonlyArray<readonly [string, string]> = [
 
 export function review(options: ReviewOptions): number {
   const { config } = loadConfigOrDefaults(options.repoRoot);
+  const asJson = options.json === true;
 
   if (!isGitRepo(options.repoRoot)) {
-    fail("not a git repository — the review chain works from the diff");
+    if (asJson) {
+      json({ ok: false, error: "not a git repository — the review chain works from the diff" });
+    } else {
+      fail("not a git repository — the review chain works from the diff");
+      detail("fix: run `git init` and commit a baseline, or run this inside a checkout");
+    }
     return 1;
   }
 
@@ -48,6 +57,10 @@ export function review(options: ReviewOptions): number {
   const paths = summary.files.map((f) => f.path);
 
   if (paths.length === 0) {
+    if (asJson) {
+      json({ ok: true, files: [], rubrics: [], proposal: null, note: "no changes to review" });
+      return 0;
+    }
     info("no changes to review");
     line();
     return 0;
@@ -56,6 +69,7 @@ export function review(options: ReviewOptions): number {
   const entries = rubricsFor(options.repoRoot, options.pluginRoot, config, paths);
   const branch = currentBranch(options.repoRoot);
   const proposal = proposalForBranch(options.repoRoot, config, branch);
+  const sections = proposal === null ? [] : deltaFor(options.repoRoot, proposal);
 
   // ---- prompt-only: pure stdout for piping ----
   if (options.promptOnly) {
@@ -64,17 +78,60 @@ export function review(options: ReviewOptions): number {
     if (rubric !== "") parts.push(rubric);
 
     if (proposal !== null) {
-      parts.push(renderDelta(proposal, deltaFor(options.repoRoot, proposal)));
+      parts.push(withRequirementCounts(renderDelta(proposal, sections), sections));
     }
+
+    // The suggested pipeline is
+    // `keel review --prompt | claude -p 'Review this change against the rubric'`.
+    // It used to emit this heading followed by a *file list*, which hands a
+    // reviewer filenames and nothing to review.
+    const untracked = summary.files.filter((f) => f.status === "untracked").map((f) => f.path);
+    const patch = assembleDiff(options.repoRoot, options.against, untracked);
 
     parts.push("# Diff under review");
     parts.push("");
-    parts.push(`${paths.length} file${paths.length === 1 ? "" : "s"}, +${summary.addedLines}/-${summary.removedLines}`);
+    parts.push(
+      `${paths.length} file${paths.length === 1 ? "" : "s"}, +${summary.addedLines}/-${summary.removedLines}` +
+        `${options.against === null ? " (working tree vs HEAD)" : ` (${options.against}...HEAD)`}`,
+    );
     parts.push("");
-    for (const path of paths.slice(0, 50)) parts.push(`- ${path}`);
-    if (paths.length > 50) parts.push(`- …and ${paths.length - 50} more`);
+
+    if (patch.text.trim() === "") {
+      parts.push("_The diff could not be read._ Files in this change:");
+      parts.push("");
+      for (const path of paths.slice(0, 50)) parts.push(`- ${path}`);
+      if (paths.length > 50) parts.push(`- …and ${paths.length - 50} more`);
+    } else {
+      parts.push("```diff");
+      parts.push(patch.text);
+      parts.push("```");
+      if (patch.truncated) {
+        parts.push("");
+        parts.push(
+          `_Diff truncated to fit the prompt._${patch.omittedFiles.length === 0 ? "" : ` Patches omitted for: ${patch.omittedFiles.slice(0, 20).join(", ")}${patch.omittedFiles.length > 20 ? `, and ${patch.omittedFiles.length - 20} more` : ""}.`} Read the rest with \`git diff${options.against === null ? "" : ` ${options.against}...HEAD`}\`.`,
+        );
+      }
+    }
 
     process.stdout.write(`${parts.join("\n")}\n`);
+    return 0;
+  }
+
+  if (asJson) {
+    json({
+      ok: true,
+      against: options.against,
+      track: options.track,
+      files: paths,
+      addedLines: summary.addedLines,
+      removedLines: summary.removedLines,
+      rubrics: entries.map((e) => ({ pack: e.pack, description: e.description, paths: e.paths })),
+      proposal:
+        proposal === null
+          ? null
+          : { id: proposal.id, requirements: countRequirements(sections).total, sections: sections.length },
+      chain: CHAIN.map(([command, why]) => ({ command, why })),
+    });
     return 0;
   }
 
@@ -84,7 +141,12 @@ export function review(options: ReviewOptions): number {
     ["files", String(paths.length)],
     ["lines", `+${summary.addedLines}/-${summary.removedLines}`],
     ["rubrics", entries.length === 0 ? dim("none apply to these paths") : String(entries.length)],
-    ["proposal", proposal === null ? dim("none") : proposal.id],
+    [
+      "proposal",
+      proposal === null
+        ? dim("none")
+        : `${proposal.id} ${dim(`(${countRequirements(sections).total} requirements)`)}`,
+    ],
   ]);
 
   if (entries.length > 0) {
@@ -104,7 +166,7 @@ export function review(options: ReviewOptions): number {
     line(`  ${bold(command.padEnd(18))}${dim(why)}`);
   }
   line();
-  line(`  ${dim("Pipe the assembled input into a reviewer with:")}`);
+  line(`  ${dim("Pipe the assembled input — rubrics, spec delta and the diff itself — into a reviewer with:")}`);
   line("  keel review --prompt | claude -p 'Review this change against the rubric'");
   line(`  ${dim("or use the keel-reviewer subagent, which reads it itself.")}`);
   line();
@@ -119,6 +181,7 @@ export interface RecordReviewOptions {
   readonly reviewCount: number;
   readonly changedFiles: number;
   readonly track: Track;
+  readonly json?: boolean;
 }
 
 /**
@@ -128,6 +191,9 @@ export interface RecordReviewOptions {
  * needs the number recorded somewhere. Counts only: no bodies, no authors, no
  * titles. Called from CI, where the PR API is reachable — never from a hook,
  * because hooks make no network calls.
+ *
+ * Non-numeric input is rejected by the caller before it reaches here: a metric
+ * that silently records 0 for `--human-comments abc` is worse than no metric.
  */
 export function recordReview(options: RecordReviewOptions): number {
   const { config } = loadConfigOrDefaults(options.repoRoot);
@@ -141,11 +207,24 @@ export function recordReview(options: RecordReviewOptions): number {
     track: options.track,
   });
 
+  if (options.json === true) {
+    json({
+      ok: true,
+      humanComments: options.humanComments,
+      botComments: options.botComments,
+      reviews: options.reviewCount,
+      changedFiles: options.changedFiles,
+      track: options.track,
+    });
+    return 0;
+  }
+
   heading("Recorded");
   rows([
     ["human comments", String(options.humanComments)],
     ["bot comments", String(options.botComments)],
     ["reviews", String(options.reviewCount)],
+    ["changed files", String(options.changedFiles)],
     ["track", options.track],
   ]);
   line();

@@ -1,6 +1,14 @@
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import type { KeelConfig } from "../../src/shared/config.js";
 import { loadPacks, searchRoots } from "../../src/standards/loader.js";
+import { resetRuleCache } from "../../src/standards/rule-loader.js";
+import { runGates } from "../../src/standards/runner.js";
+import { resetTrustCache } from "../../src/standards/trust.js";
 
 import { PLUGIN_ROOT, TempRepo } from "../helpers/temp-repo.js";
 
@@ -8,6 +16,8 @@ let repo: TempRepo;
 
 beforeEach(() => {
   repo = TempRepo.create("keel-loader-");
+  resetRuleCache();
+  resetTrustCache();
 });
 
 afterEach(() => {
@@ -186,6 +196,92 @@ describe("precedence", () => {
     expect(override).toBeDefined();
     expect(override?.winner).toContain(repo.root);
     expect(override?.loser).toContain(PLUGIN_ROOT);
+  });
+});
+
+/**
+ * `standards.dirs` is read from committed config, so it is repo-supplied input.
+ * It used to be resolved unconditionally against the repo root, which let a
+ * repo point Keel at any readable directory on the machine — `../../../tmp/evil`
+ * and `/tmp/evil` both resolved through — and the packs found there were loaded
+ * and executed.
+ */
+describe("standards.dirs cannot leave the repository", () => {
+  let outside: string;
+
+  beforeEach(() => {
+    // A sibling of the repo root, so `../<name>` reaches it.
+    outside = mkdtempSync(join(tmpdir(), "keel-outside-"));
+    mkdirSync(join(outside, "outsider"), { recursive: true });
+    writeFileSync(
+      join(outside, "outsider", "standard.yaml"),
+      [
+        "name: outsider",
+        "mode: gate",
+        'applies_to: ["src/**/*.ts"]',
+        "languages: [typescript]",
+        "owner: elsewhere",
+        "severity: high",
+        'description: "Lives outside the repository."',
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      join(outside, "outsider", "rule.ts"),
+      [
+        "import { writeFileSync } from 'node:fs';",
+        `writeFileSync(${JSON.stringify(join(outside, "executed.txt"))}, 'executed');`,
+        "const rule = () => [];",
+        "export default rule;",
+      ].join("\n"),
+      "utf8",
+    );
+  });
+
+  afterEach(() => {
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  function withDirs(dirs: readonly string[]): KeelConfig {
+    const config = repo.config();
+    return { ...config, standards: { ...config.standards, dirs: [...dirs] } };
+  }
+
+  it.each([
+    ["a relative walk", () => `../${basename(outside)}`],
+    ["an absolute path", () => outside],
+  ])("refuses %s, and says which key is wrong", async (_label, dir) => {
+    const config = withDirs([dir()]);
+
+    expect(searchRoots(repo.root, PLUGIN_ROOT, config).some((r) => r.startsWith(outside))).toBe(
+      false,
+    );
+
+    const result = loadPacks(repo.root, PLUGIN_ROOT, config);
+    expect(result.packs.map((p) => p.standard.name)).not.toContain("outsider");
+
+    const issue = result.issues.find((i) => i.path === "standards.dirs");
+    expect(issue).toBeDefined();
+    expect(issue?.fix).toContain("inside the repository");
+
+    // And nothing out there is executed, whatever the config says.
+    repo.write("src/thing.ts", "const a = 1;\n");
+    const summary = await runGates({
+      repoRoot: repo.root,
+      pluginRoot: PLUGIN_ROOT,
+      config,
+      filePath: "src/thing.ts",
+    });
+    expect(existsSync(join(outside, "executed.txt"))).toBe(false);
+    expect(summary.results.some((r) => r.pack === "outsider")).toBe(false);
+  });
+
+  it("falls back to the default directory, so packs inside the repo still load", () => {
+    repo.write("standards/sample-rule/standard.yaml", VALID_PACK);
+    repo.write("standards/sample-rule/rule.ts", RULE_SOURCE);
+
+    const result = loadPacks(repo.root, PLUGIN_ROOT, withDirs([`../${basename(outside)}`]));
+    expect(result.packs.map((p) => p.standard.name)).toContain("sample-rule");
   });
 });
 

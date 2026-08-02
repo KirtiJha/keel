@@ -3,31 +3,31 @@
   "entries": [
     {
       "name": "cli",
-      "bytes": 562526
+      "bytes": 615913
     },
     {
       "name": "session-start",
-      "bytes": 491866
+      "bytes": 495588
     },
     {
       "name": "pre-tool-use",
-      "bytes": 156944
+      "bytes": 160781
     },
     {
       "name": "post-tool-use",
-      "bytes": 182502
+      "bytes": 197416
     },
     {
       "name": "post-bash",
-      "bytes": 129812
+      "bytes": 133758
     },
     {
       "name": "message-display",
-      "bytes": 128451
+      "bytes": 130609
     },
     {
       "name": "session-end",
-      "bytes": 125108
+      "bytes": 127266
     }
   ]
 }

@@ -100,6 +100,15 @@ function isPhase(value: string): value is Phase {
   return (PHASES as readonly string[]).includes(value);
 }
 
+/** A command that registers or installs a Claude Code plugin. */
+const PLUGIN_INSTALL = /\bplugin\s+(?:marketplace\s+add|install)\b/;
+
+/** Does the command carry the pinned version, with or without a leading `v`? */
+function mentionsVersion(command: string, version: string): boolean {
+  const bare = version.replace(/^v/, "");
+  return command.includes(bare);
+}
+
 /**
  * Validate pins and phase ownership.
  *
@@ -133,6 +142,27 @@ export function validateLock(lock: UpstreamLock): LockIssue[] {
         dependency: name,
         message: `version "${dependency.version}" is a floating range`,
         fix: `pin the exact version, e.g. ${dependency.version.replace(/^[\^~]/, "")}`,
+        severity: "error",
+      });
+    }
+
+    // ---- the pin has to reach the install command ----
+    // `claude plugin marketplace add obra/superpowers` tracks whatever the
+    // default branch happens to be. The `version:` field above it then records
+    // a number nothing enforces — a decorative pin, which is precisely the
+    // failure "reject moving versions" exists to prevent, wearing a version
+    // string as a disguise. A ref (`owner/repo#v6.2.0`) is what makes it real.
+    const install = dependency.install;
+    if (
+      install !== undefined &&
+      dependency.version !== UNPINNED &&
+      PLUGIN_INSTALL.test(install) &&
+      !mentionsVersion(install, dependency.version)
+    ) {
+      issues.push({
+        dependency: name,
+        message: `install command does not pin ${dependency.version} — \`${install}\` tracks the default branch, so the recorded version is decorative`,
+        fix: `pin the ref in the command, e.g. \`${install.replace(/(\s)(\S+)$/, `$1$2#v${dependency.version.replace(/^v/, "")}`)}\``,
         severity: "error",
       });
     }

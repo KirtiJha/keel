@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 
 import { exec } from "./exec.js";
-import { isFile, isKeelInternalPath, toRepoRelative } from "./paths.js";
+import { isKeelInternalPath, toRepoRelative } from "./paths.js";
 import { type Result, err, ok } from "./result.js";
 
 /**
@@ -107,7 +107,8 @@ export function diffSummary(root: string, against: string | null = null): DiffSu
     for (const line of numstat.value.split("\n")) {
       if (line.trim() === "") continue;
       const [addRaw, remRaw, ...rest] = line.split("\t");
-      const path = rest[rest.length - 1];
+      const raw = rest[rest.length - 1];
+      const path = raw === undefined ? undefined : numstatNewPath(raw);
       if (path === undefined || path === "" || isInternal(path)) continue;
       // "-" marks a binary file; count it as zero lines rather than NaN.
       const added = addRaw === "-" ? 0 : Number.parseInt(addRaw ?? "0", 10);
@@ -136,39 +137,113 @@ export function diffSummary(root: string, against: string | null = null): DiffSu
   return { files, addedLines, removedLines };
 }
 
+/**
+ * Expand a `--numstat` path field to the file's *new* path.
+ *
+ * With renames enabled git compresses the pair into one field —
+ * `src/{alpha.ts => beta.ts}` or `db/{ => migrations}/0001.sql` — and taking
+ * that literally produces a path that does not exist. A file moved *into* a
+ * `force_full_globs` directory then failed to match, and `readWorkingFile`
+ * returned null so symbol analysis was skipped entirely.
+ */
+export function numstatNewPath(field: string): string {
+  const brace = /^(.*)\{(.*) => (.*)\}(.*)$/.exec(field);
+  if (brace !== null) {
+    const [, prefix = "", , to = "", suffix = ""] = brace;
+    // `db/{ => migrations}/x` leaves an empty segment when `to` is empty.
+    return `${prefix}${to}${suffix}`.replace(/\/{2,}/g, "/");
+  }
+  const arrow = field.split(" => ");
+  return (arrow.length === 2 ? arrow[1] : field) ?? field;
+}
+
+/**
+ * Lines in a file that git does not track.
+ *
+ * `split("\n").length` counts a phantom trailing line for any file ending in a
+ * newline — which is nearly all of them — so a brand-new 50-line file measured
+ * 51 and escalated off the quick track while the same content appended to a
+ * *tracked* file measured 49. The two paths now agree.
+ *
+ * Binary files return 0 rather than a byte-derived line count, matching how
+ * `--numstat` reports them as `-`.
+ */
 function countLines(root: string, repoRelPath: string): number {
   try {
-    const text = readFileSync(`${root}/${repoRelPath}`, "utf8");
-    if (text === "") return 0;
-    return text.split("\n").length;
+    const buf = readFileSync(`${root}/${repoRelPath}`);
+    if (buf.length === 0) return 0;
+    // A NUL byte in the first 8 KB is git's own binary heuristic.
+    if (buf.subarray(0, 8192).includes(0)) return 0;
+
+    const text = buf.toString("utf8");
+    const lines = text.split("\n").length;
+    return text.endsWith("\n") ? lines - 1 : lines;
   } catch {
     return 0;
   }
 }
 
 /**
- * 1-based line numbers **added or modified** in the working copy of one file.
+ * 1-based line numbers **added or modified** in one file.
  *
- * This is the hard boundary the gate runner enforces. A finding on a line not
+ * This is the hard boundary the gate runner enforces: a finding on a line not
  * in this set is dropped, no matter what a pack rule reports.
+ *
+ * **Why this returns a result rather than a bare Set.** It used to answer an
+ * unanswerable question with a confident guess. `git ls-files --error-unmatch`
+ * failing was read as "untracked, so every line is new" — but it also fails
+ * when git is not installed, when the directory is not a repository, and when
+ * the index is corrupt. In all three the gates then evaluated the *whole file*
+ * and blocked an edit to a committed, unmodified file with "new exported symbol
+ * implemented without an observed failing test". A hook must fail open, and
+ * degrading into a confident wrong block is the worst way to fail.
+ *
+ * So the three cases are now distinct:
+ *   - `known: false`  — git could not tell us. Callers report nothing.
+ *   - ignored file    — not part of any change; an empty set, never whole-file.
+ *   - untracked file  — genuinely new, so every line counts.
  */
-export function changedLines(root: string, filePath: string): Set<number> {
-  const rel = toRepoRelative(root, filePath);
-  const result = new Set<number>();
+export type ChangedLines =
+  | { readonly known: true; readonly lines: ReadonlySet<number> }
+  | { readonly known: false; readonly reason: string };
 
-  // Untracked: every line is new.
+const NO_LINES: ReadonlySet<number> = new Set<number>();
+
+export function changedLines(root: string, filePath: string, against?: string | null): ChangedLines {
+  const rel = toRepoRelative(root, filePath);
+
   const tracked = exec("git", ["ls-files", "--error-unmatch", "--", rel], { cwd: root });
-  const isTracked = tracked.ok && tracked.value.code === 0;
-  if (!isTracked) {
-    const total = countLines(root, rel);
-    for (let i = 1; i <= total; i++) result.add(i);
-    return result;
+  if (!tracked.ok) {
+    return { known: false, reason: "git is unavailable" };
+  }
+  // 128 is git's fatal code: not a repository, unreadable index, bad object.
+  // 1 is the ordinary "this path is not tracked" answer.
+  if (tracked.value.code === 128) {
+    return { known: false, reason: "not a git repository, or the index is unreadable" };
   }
 
-  const diff = git(root, ["diff", "--unified=0", "--no-color", "HEAD", "--", rel]);
-  if (!diff.ok) return result;
-  for (const line of parseAddedLineNumbers(diff.value)) result.add(line);
-  return result;
+  if (tracked.value.code !== 0) {
+    // Ignored files are not part of the change at all. Treating them as
+    // "wholly new" made every edit to generated code block on every gate.
+    const ignored = exec("git", ["check-ignore", "-q", "--", rel], { cwd: root });
+    if (ignored.ok && ignored.value.code === 0) {
+      return { known: true, lines: NO_LINES };
+    }
+    const total = countLines(root, rel);
+    const all = new Set<number>();
+    for (let i = 1; i <= total; i++) all.add(i);
+    return { known: true, lines: all };
+  }
+
+  // `against` matters: the mutation gate passes a base ref, and comparing to
+  // HEAD there yields an empty set on every CI checkout because the tree is
+  // clean. That silently reduced the gate to a no-op.
+  const base = against === undefined || against === null ? "HEAD" : `${against}...HEAD`;
+  const diff = git(root, ["diff", "--unified=0", "--no-color", base, "--", rel]);
+  if (!diff.ok) return { known: false, reason: `git diff against ${base} failed` };
+
+  const lines = new Set<number>(parseAddedLineNumbers(diff.value));
+  return { known: true, lines };
 }
 
 /**
@@ -197,11 +272,18 @@ export function showFile(root: string, ref: string, filePath: string): string | 
   return res.value.stdout;
 }
 
-/** Working-tree contents, or null when the file is absent. */
+/**
+ * Working-tree contents, or null when the file is absent.
+ *
+ * Symlinks read as null rather than as their target. `statSync` follows links,
+ * so `ln -s a.ts link.ts` made the router see a second copy of every symbol in
+ * `a.ts` — a phantom *added* export that escalated the track. A link is not a
+ * source file; the thing it points at is analysed on its own account.
+ */
 export function readWorkingFile(root: string, filePath: string): string | null {
   const abs = filePath.startsWith("/") ? filePath : `${root}/${filePath}`;
-  if (!isFile(abs)) return null;
   try {
+    if (!lstatSync(abs).isFile()) return null;
     return readFileSync(abs, "utf8");
   } catch {
     return null;

@@ -82,9 +82,13 @@ export function generateManagedBlock(options: GenerateOptions): string {
 
   lines.push("## Process");
   lines.push("");
+  // Not "chosen automatically" — nothing invokes the router. SessionStart
+  // injects a reminder and this line is the other half of that nudge; the
+  // classification is deterministic, but running it is the model's choice and
+  // CI is where the process gates actually bite.
   lines.push(
-    `- Track is chosen automatically (\`keel route\`). Quick changes need no plan; ` +
-      `standard and full do.`,
+    "- Run `keel route` to see which track this change is on. Quick changes need " +
+      "no plan; standard and full do.",
   );
   if (config.tdd.enabled) {
     lines.push("- Tests first. The RED run must actually happen — gates check that it did.");

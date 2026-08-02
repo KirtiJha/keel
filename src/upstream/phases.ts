@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { parse as parseYaml } from "yaml";
 
@@ -131,19 +131,46 @@ export function findConflicts(claims: readonly PhaseClaim[]): PhaseConflict[] {
   return conflicts.sort((a, b) => a.phase.localeCompare(b.phase));
 }
 
-/** Every place a repo can carry skills that might claim a phase. */
+/**
+ * Every distinct place a repo can carry skills that might claim a phase.
+ *
+ * De-duplicated, and that is not cosmetic. When the repository *is* the plugin
+ * checkout — during development of Keel itself, and in any repo that vendors it
+ * — `pluginRoot/skills` and `repoRoot/skills` are the same directory, so the
+ * walk collected every claim twice. `keel check` reported "2 declared claims"
+ * for one real claim, and a single skill would have been reported as conflicting
+ * with itself had `findConflicts` not happened to compare claimant names.
+ *
+ * Paths are resolved before comparison so `/repo/skills` and `/repo/./skills`
+ * count as one.
+ */
 export function skillRoots(repoRoot: string, pluginRoot: string): string[] {
-  return [
+  const candidates = [
     join(pluginRoot, "skills"),
     join(repoRoot, ".claude", "skills"),
     join(repoRoot, "skills"),
   ];
+  return [...new Set(candidates.map((p) => resolve(p)))];
 }
 
-export function auditPhases(repoRoot: string, pluginRoot: string): {
+export interface PhaseAudit {
   readonly claims: readonly PhaseClaim[];
   readonly conflicts: readonly PhaseConflict[];
-} {
-  const claims = skillRoots(repoRoot, pluginRoot).flatMap((root) => collectClaims(root));
-  return { claims, conflicts: findConflicts(claims) };
+  /**
+   * Skill directories that existed and were actually read.
+   *
+   * Reported so the result can be read honestly. This audit sees `keel-phases:`
+   * frontmatter in SKILL.md files under these paths and nothing else —
+   * Superpowers is installed into Claude Code's plugin cache outside any
+   * checkout, and OpenSpec ships slash commands rather than skills. A clean
+   * result means "nothing here conflicts", not "the installed toolchain was
+   * verified", and a check that implies the second is a check that lies.
+   */
+  readonly roots: readonly string[];
+}
+
+export function auditPhases(repoRoot: string, pluginRoot: string): PhaseAudit {
+  const roots = skillRoots(repoRoot, pluginRoot);
+  const claims = roots.flatMap((root) => collectClaims(root));
+  return { claims, conflicts: findConflicts(claims), roots: roots.filter(isDirectory) };
 }

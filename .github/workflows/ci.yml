@@ -61,7 +61,7 @@ jobs:
           echo "committed bundles match a fresh build"
 
   hook-performance:
-    name: Hook cold start
+    name: Hook cold start (reported, not gated)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -71,8 +71,28 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      # Gated on p50; p95 is reported. See the comment in the benchmark for why.
-      - run: npm run bench:coldstart
+
+      # Reported, not gated — the measurement is too noisy to gate on.
+      #
+      # The benchmark reports `own = p50 − spawnFloor`: one noisy number minus
+      # another. Three consecutive runs on identical code produced 3, 1 and 1
+      # hooks "OVER BUDGET", and the measured Node spawn floor moved 57 → 84 ms
+      # (47%) across those same runs. A subtraction of two independently noisy
+      # quantities cannot distinguish a 30 ms regression from scheduler jitter,
+      # so a red build here carries no information about the diff — and a gate
+      # that fails for reasons unrelated to the diff gets disabled, which leaves
+      # no gate at all.
+      #
+      # This stays non-gating until the methodology is fixed in
+      # `scripts-dev/bench-coldstart.mjs`: the floor and the hook need to be
+      # measured in the same interleaved sample so the subtraction cancels drift
+      # rather than compounding it, and the pass/fail decision needs to be made
+      # on a statistic with a stated confidence interval rather than on a single
+      # p50 point estimate. Re-gate once a run on unchanged code is reproducibly
+      # green.
+      - name: Hook cold start
+        run: npm run bench:coldstart
+        continue-on-error: true
 
   python:
     name: Python
@@ -85,8 +105,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      # Pinned exactly, for the same reason `keel check` rejects a floating
+      # version in `upstream.lock`: an unpinned tool can break the build with no
+      # commit behind it. These are the versions this repository's Python
+      # checks were last verified green against — bump them deliberately, in a
+      # commit, after re-running `npm run py:lint py:types py:test`.
       - name: Install dev tooling
-        run: pip install pytest ruff mypy
+        run: pip install pytest==9.0.2 ruff==0.15.8 mypy==1.19.1
       - name: Lint
         run: ruff check .
       - name: Typecheck
@@ -97,9 +122,13 @@ jobs:
   mutation:
     name: Mutation score
     runs-on: ubuntu-latest
-    # PRs only: the gate is diff-only, so there is nothing to measure on a push
-    # to the default branch where the diff is already merged.
-    if: github.event_name == 'pull_request'
+    # Runs on pushes to main as well as on PRs. Mutation score is this
+    # project's stated replacement for coverage (rule of the road 4), so a
+    # direct push to the default branch — which no PR ever reviewed — is
+    # exactly the change that must not skip it. The gate is diff-only, so the
+    # only thing a push needs is a base ref: `HEAD^` is the previous default
+    # branch tip whether the push was a merge commit, a squash, or a
+    # fast-forward, which makes the diff the change that just landed.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -111,13 +140,32 @@ jobs:
       - run: npm ci
       - run: npm run build
       # Rule of the road 4: mutation score, never coverage. Confined to the
-      # lines this PR touched, so a legacy file is never a cleanup project.
+      # lines this change touched, so a legacy file is never a cleanup project.
       - name: keel mutate
-        run: node scripts/cli.mjs mutate --against origin/${{ github.base_ref }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          elif git rev-parse --verify --quiet "HEAD^" >/dev/null; then
+            base="HEAD^"
+          else
+            echo "root commit — no base to diff against, nothing to mutate"
+            exit 0
+          fi
+          node scripts/cli.mjs mutate --against "$base"
 
   spec-discipline:
     name: Spec discipline
     runs-on: ubuntu-latest
+    # Scoped to this job only, because only this job writes anything. The
+    # workflow default is `contents: read`; a job that declares `permissions`
+    # replaces that default rather than adding to it, so `contents: read` is
+    # repeated here deliberately.
+    #
+    # Without `pull-requests: write` the `gh pr comment` step below 403s. It is
+    # wrapped in `continue-on-error`, so that failure was silent on every PR.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -154,6 +202,43 @@ jobs:
           else
             echo "no proposal for this branch — nothing to attach"
           fi
+
+  standards-gates:
+    name: Standards gates
+    runs-on: ubuntu-latest
+    # The standards gates otherwise run in one place only: Claude Code's
+    # PostToolUse hook. Any change authored outside Claude Code —
+    # another editor, a bot, a web edit, a direct push — never meets them, so
+    # org rules are enforced for some authors and not others. This job is where
+    # they apply to everyone.
+    #
+    # `keel gate` accepts `--against <ref>`, `--json` and `--all`
+    # (`src/cli/registry.ts`, wired in `src/cli/main.ts`). `--all` is
+    # deliberately not passed: CI blocks on `high`-severity findings, and
+    # advisory ones belong in the editing loop where they can be acted on.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Diff-only, like the hook: findings on lines this change did not touch
+      # are dropped by the runner, so a legacy file is never a cleanup project.
+      - name: keel gate
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          elif git rev-parse --verify --quiet "HEAD^" >/dev/null; then
+            base="HEAD^"
+          else
+            echo "root commit — no base to diff against, nothing to gate"
+            exit 0
+          fi
+          node scripts/cli.mjs gate --against "$base"
 
   self-check:
     name: keel check (dogfood)

@@ -71,7 +71,19 @@ session as a spike. It does not relax 2 or 4.
 
 - `keel.config.yaml` — tracks, router thresholds, TDD settings, telemetry
 - `standards/` — the packs; see the `keel-standards` skill to add one
-- `.keel/` — cache, telemetry spool, TDD state. Gitignored, safe to delete.
+- `.keel/` — cache, telemetry spool, TDD state. Gitignored, **not disposable**.
+
+`.keel/tdd-state.json` is the per-branch record of which tests have been
+*observed failing*. Delete it and gate 3 loses that history: the next new
+exported symbol blocks until you re-run its test and watch it fail again. The
+telemetry spool under `.keel/telemetry/` is what `keel doctor` reads for gate
+hit rates and timings, so deleting it resets those to "no data".
+
+`.keel/trust.json` records which repo-local pack rules you have approved to run
+(`keel trust`). Deleting it means approving them again.
+
+`.keel/cache/` is the only part that is genuinely safe to remove — it is
+content-hashed and rebuilds itself.
 
 ## Upstream
 

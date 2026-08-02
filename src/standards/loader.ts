@@ -1,12 +1,12 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { parse as parseYaml } from "yaml";
 
-import type { KeelConfig } from "../shared/config.js";
+import { DEFAULT_PACK_DIRS, type KeelConfig } from "../shared/config.js";
 import { validateGlob } from "../shared/glob.js";
-import { logDebug } from "../shared/log.js";
-import { isDirectory, isFile } from "../shared/paths.js";
+import { logDebug, logWarn } from "../shared/log.js";
+import { isDirectory, isFile, resolveConfiguredPath } from "../shared/paths.js";
 import { errorMessage } from "../shared/result.js";
 
 import { parseStandard, type Standard, type StandardIssue } from "./schema.js";
@@ -43,18 +43,57 @@ export interface PackLoadResult {
   readonly disabled: readonly string[];
 }
 
+interface ResolvedRoots {
+  readonly roots: string[];
+  /** Configured entries that pointed outside the repo, already phrased. */
+  readonly rejected: string[];
+}
+
 /**
  * Search roots in ascending precedence: the plugin's own packs first, then each
  * configured directory. A repo-local pack with the same name as an org pack
  * wins, and the override is recorded so `keel check` can report it — silent
  * shadowing is how a team ends up running a rule they think they replaced.
+ *
+ * `standards.dirs` comes out of `keel.config.yaml`, which is committed — so it
+ * is repo-supplied input, and it used to be resolved unconditionally. Both
+ * `../../../../tmp/evil` and `/tmp/evil` resolved straight through, and packs
+ * found there were loaded and their rules executed. Every configured entry now
+ * goes through `resolveConfiguredPath`, which keeps it inside the working tree
+ * or hands back the documented default. The plugin's own directory is not
+ * configured and is not subject to the check: it is where Keel itself lives.
  */
-export function searchRoots(repoRoot: string, pluginRoot: string, config: KeelConfig): string[] {
+function resolveSearchRoots(
+  repoRoot: string,
+  pluginRoot: string,
+  config: KeelConfig,
+): ResolvedRoots {
   const roots = [join(pluginRoot, "standards")];
-  for (const dir of config.standards.dirs) roots.push(resolve(repoRoot, dir));
+  const rejected: string[] = [];
+
+  for (const dir of config.standards.dirs) {
+    const resolved = resolveConfiguredPath(repoRoot, dir, {
+      key: "standards.dirs",
+      fallback: DEFAULT_PACK_DIRS[0] ?? "standards",
+    });
+    if (!resolved.ok) {
+      const message = resolved.error ?? `standards.dirs entry \`${dir}\` is outside the repository`;
+      logWarn("standards.dirs entry rejected", { dir, error: message });
+      rejected.push(message);
+      // `resolved.path` is the documented default, inside the repo. Rejecting
+      // the value must not also switch off packs the repo legitimately ships.
+    }
+    roots.push(resolved.path);
+  }
+
   // De-duplicate while preserving order: a repo whose standards dir *is* the
   // plugin dir (this repo, during development) must not load everything twice.
-  return [...new Set(roots)];
+  return { roots: [...new Set(roots)], rejected };
+}
+
+/** Directories packs are read from, in ascending precedence. */
+export function searchRoots(repoRoot: string, pluginRoot: string, config: KeelConfig): string[] {
+  return resolveSearchRoots(repoRoot, pluginRoot, config).roots;
 }
 
 /**
@@ -204,7 +243,18 @@ export function loadPacks(
   const disabledSet = new Set(config.standards.disabled);
   const disabled: string[] = [];
 
-  for (const root of searchRoots(repoRoot, pluginRoot, config)) {
+  const { roots, rejected } = resolveSearchRoots(repoRoot, pluginRoot, config);
+  for (const message of rejected) {
+    issues.push({
+      pack: repoRoot,
+      path: "standards.dirs",
+      message,
+      fix: "point standards.dirs at a directory inside the repository, e.g. `standards`",
+      severity: "error",
+    });
+  }
+
+  for (const root of roots) {
     if (!isDirectory(root)) continue;
 
     let entries: string[];

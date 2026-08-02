@@ -1,5 +1,6 @@
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -163,6 +164,48 @@ describe("M8 acceptance — the spool contains no source code", () => {
     );
   });
 
+  it("redacts the free-text pack name", () => {
+    // Pack names are regex-validated at load, so this is defence in depth —
+    // but telemetry is named in the secret-handling constraint and `pack` was
+    // the one string written verbatim.
+    record(repo.root, repo.config(), {
+      kind: "gate",
+      pack: "leaky sk-abcdefghijklmnopqrstuvwx",
+      severity: "high",
+      result: "fail",
+      finding_count: 1,
+      duration_ms: 1,
+    });
+
+    const text = spoolText();
+    expect(text).not.toContain("sk-abcdefghijklmnopqrstuvwx");
+    expect(text).toContain("[redacted]");
+  });
+
+  it("redacts the free-text hook name", () => {
+    record(repo.root, repo.config(), {
+      kind: "hook_timing",
+      hook: "PostToolUse token=hunter2secret",
+      duration_ms: 1,
+      loaded_ast: false,
+    });
+
+    expect(spoolText()).not.toContain("hunter2secret");
+  });
+
+  it("keeps ordinary pack names readable", () => {
+    record(repo.root, repo.config(), {
+      kind: "gate",
+      pack: "no-raw-color-values",
+      severity: "high",
+      result: "pass",
+      finding_count: 0,
+      duration_ms: 1,
+    });
+
+    expect(spoolText()).toContain("no-raw-color-values");
+  });
+
   it("records no file paths anywhere in the schema", () => {
     // A structural check: no event type may declare a path-shaped field.
     record(repo.root, repo.config(), {
@@ -186,6 +229,58 @@ describe("M8 acceptance — the spool contains no source code", () => {
         expect(key).not.toMatch(/path|file|dir|source|content|snippet|prompt|diff/i);
       }
     }
+  });
+});
+
+describe("telemetry.path containment", () => {
+  let outside: string;
+
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), "keel-telemetry-outside-"));
+  });
+
+  afterEach(() => {
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  /** `keel doctor` documents telemetry.path as "a repo-relative directory". */
+  function escaping(path: string) {
+    const config = repo.config();
+    return { ...config, telemetry: { ...config.telemetry, path } };
+  }
+
+  it("refuses an absolute path outside the repo", () => {
+    const target = join(outside, "OUTSIDE");
+    record(repo.root, escaping(target), { kind: "spike", enabled: true });
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("refuses a `../` walk out of the repo", () => {
+    const target = join(outside, "OUTSIDE");
+    record(repo.root, escaping(relative(repo.root, target)), { kind: "spike", enabled: true });
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("falls back to the default spool rather than dropping the event", () => {
+    record(repo.root, escaping(join(outside, "OUTSIDE")), { kind: "spike", enabled: true });
+    expect(readSpool(repo.root, repo.config())).toHaveLength(1);
+  });
+
+  it("reads from the default spool when the configured path escapes", () => {
+    record(repo.root, repo.config(), { kind: "spike", enabled: true });
+    expect(readSpool(repo.root, escaping(join(outside, "OUTSIDE")))).toHaveLength(1);
+  });
+
+  it("resolves the spool directory inside the repo whatever is configured", () => {
+    expect(spoolDir(repo.root, escaping("../../../../tmp/evil"))).toBe(
+      join(repo.root, ".keel", "telemetry"),
+    );
+  });
+
+  it("never throws on a bad path — hooks must not fail", () => {
+    expect(() =>
+      record(repo.root, escaping("../evil"), { kind: "spike", enabled: true }),
+    ).not.toThrow();
   });
 });
 

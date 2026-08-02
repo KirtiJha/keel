@@ -166,3 +166,61 @@ describe("this repository's upstream.lock", () => {
     expect(owned).toContain("spec-conformance");
   });
 });
+
+describe("plugin install commands carry their pin", () => {
+  const plugin = (install: string, version = "6.2.0") => ({
+    version,
+    source: "obra/superpowers",
+    role: "install" as const,
+    mirror: "internal/superpowers@6.2.0",
+    owns: [] as string[],
+    install,
+  });
+
+  it("rejects a marketplace add with no ref — the version would be decorative", () => {
+    const issues = validateLock(
+      lock({ superpowers: plugin("claude plugin marketplace add obra/superpowers") }),
+    );
+    const issue = issues.find((i) => i.severity === "error");
+    expect(issue?.message).toContain("does not pin 6.2.0");
+    expect(issue?.fix).toContain("obra/superpowers#v6.2.0");
+  });
+
+  it("accepts a marketplace add that names the ref", () => {
+    const issues = validateLock(
+      lock({ superpowers: plugin("claude plugin marketplace add obra/superpowers#v6.2.0") }),
+    );
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+  });
+
+  it("accepts a bare version in the command as well as a v-prefixed one", () => {
+    const issues = validateLock(
+      lock({ superpowers: plugin("claude plugin install superpowers@6.2.0") }),
+    );
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+  });
+
+  it("leaves npm install commands to the version check that already covers them", () => {
+    const issues = validateLock(
+      lock({
+        openspec: {
+          version: "1.7.0",
+          source: "@fission-ai/openspec",
+          role: "install" as const,
+          mirror: "internal/openspec@1.7.0",
+          owns: [] as string[],
+          install: "npm install --save-exact @fission-ai/openspec@1.7.0",
+        },
+      }),
+    );
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+  });
+});
+
+describe("this repository's own lock", () => {
+  it("pins every plugin marketplace to a ref", () => {
+    const loaded = loadLock(PLUGIN_ROOT);
+    if (!loaded.ok) throw new Error(loaded.error);
+    expect(validateLock(loaded.value).filter((i) => i.severity === "error")).toEqual([]);
+  });
+});

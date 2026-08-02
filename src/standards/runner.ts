@@ -11,7 +11,15 @@ import { isPythonFile, isTypeScriptLike, parseSource } from "../shared/ast/ts.js
 
 import { type LoadedPack, loadPacks } from "./loader.js";
 import { loadRule } from "./rule-loader.js";
-import type { Finding, GateContext, GateResult, GateRunSummary, ReportedFinding } from "./types.js";
+import { ruleTrust } from "./trust.js";
+import type {
+  Finding,
+  GateContext,
+  GateResult,
+  GateRunSummary,
+  GateStatus,
+  ReportedFinding,
+} from "./types.js";
 
 /**
  * The gate runner.
@@ -56,32 +64,80 @@ export interface RunGatesOptions {
   readonly source?: string;
   /** Changed-line set. Derived from git when omitted. */
   readonly changedLines?: ReadonlySet<number>;
+  /** Whole-run deadline in ms. Defaults to `RUN_BUDGET_MS`. */
+  readonly budgetMs?: number;
 }
+
+/**
+ * Largest file the gates will look at.
+ *
+ * Well past any hand-written source file and well short of the generated ones.
+ * An 18 MB bundle committed into `src/` took 17.6 s to parse and check against
+ * a 30 s hook timeout, and produced 146 KB of findings — around 35k tokens fed
+ * back into the model from a single edit. Nothing about that was a useful
+ * signal, so the file is skipped and the edit proceeds.
+ */
+export const MAX_GATED_FILE_CHARS = 512 * 1024;
+
+/**
+ * Whole-run deadline for every pack over one file.
+ *
+ * `RULE_TIMEOUT_MS` bounds one rule; packs are awaited in sequence, so without
+ * this nothing bounded the *sum*. Twenty packs each returning a promise that
+ * never settles ran the hook for 40.9 s against its registered 30 s timeout —
+ * every rule respected its own timeout and the hook still overran. Past the
+ * deadline the remaining packs are not started and are reported as skipped.
+ */
+export const RUN_BUDGET_MS = 5000;
 
 /** Run every applicable gate over one file. */
 export async function runGates(options: RunGatesOptions): Promise<GateRunSummary> {
   const total = stopwatch();
   const repoRelPath = toRepoRelative(options.repoRoot, options.filePath);
-  const empty = (): GateRunSummary => ({
-    path: repoRelPath,
-    results: [],
-    blocking: [],
-    advisory: [],
-    durationMs: total(),
-  });
+  const budget = options.budgetMs ?? RUN_BUDGET_MS;
+  const remaining = (): number => budget - total();
+
+  const nothing = (skipped: readonly string[] = []): GateRunSummary =>
+    summarise(repoRelPath, [], skipped, total());
 
   // Applicability is decided on paths alone, so it is settled *before* any I/O.
   // Most edits in a session match no gate pack at all, and for those this is
   // the whole cost: no file read, no `git diff`, no parse.
   const { packs } = loadPacks(options.repoRoot, options.pluginRoot, options.config);
   const applicable = applicablePacks(packs, repoRelPath, "gate");
-  if (applicable.length === 0) return empty();
+  if (applicable.length === 0) return nothing();
 
   const source = options.source ?? safeRead(options.repoRoot, repoRelPath);
-  if (source === null) return empty();
+  if (source === null) return nothing();
 
-  const changed =
-    options.changedLines ?? gitChangedLines(options.repoRoot, repoRelPath);
+  // Before the parse, and before git is asked for a diff of it.
+  if (source.length > MAX_GATED_FILE_CHARS) {
+    logDebug("skipping gates: file too large", {
+      path: repoRelPath,
+      chars: source.length,
+      limit: MAX_GATED_FILE_CHARS,
+    });
+    return nothing(applicable.map((p) => p.standard.name));
+  }
+
+  // Diff-only is not a preference, it is the property that makes these gates
+  // usable on a legacy repo. When git cannot tell us which lines changed we do
+  // not fall back to the whole file — we report nothing and let the edit
+  // through. A gate that blocks because git is missing is a broken gate.
+  let changed: ReadonlySet<number>;
+  if (options.changedLines !== undefined) {
+    changed = options.changedLines;
+  } else {
+    const resolved = gitChangedLines(options.repoRoot, repoRelPath);
+    if (!resolved.known) {
+      logDebug("skipping gates: changed lines unknown", {
+        path: repoRelPath,
+        reason: resolved.reason,
+      });
+      return nothing();
+    }
+    changed = resolved.lines;
+  }
 
   const language = languageOf(repoRelPath);
   const results: GateResult[] = [];
@@ -98,20 +154,96 @@ export async function runGates(options: RunGatesOptions): Promise<GateRunSummary
   for (const pack of tsPacks) {
     // A python-only file must not be handed to a TypeScript rule.
     if (language === "python" && pack.rulePyPath !== null) continue;
-    results.push(await runTsPack(options, pack, { path: repoRelPath, source, changedLines: changed, config: pack.standard.config, ast }));
+
+    const left = remaining();
+    if (left <= 0) {
+      results.push(notRun(pack, "skipped", `the ${budget} ms gate budget for this file ran out`, 0));
+      continue;
+    }
+    results.push(
+      await runTsPack(
+        options,
+        pack,
+        { path: repoRelPath, source, changedLines: changed, config: pack.standard.config, ast },
+        Math.min(RULE_TIMEOUT_MS, left),
+      ),
+    );
   }
 
   if (pyPacks.length > 0) {
-    results.push(...runPythonPacks(options, pyPacks, repoRelPath, source, changed));
+    const left = remaining();
+    if (left <= 0) {
+      for (const pack of pyPacks) {
+        results.push(notRun(pack, "skipped", `the ${budget} ms gate budget for this file ran out`, 0));
+      }
+    } else {
+      results.push(...runPythonPacks(options, pyPacks, repoRelPath, source, changed, left));
+    }
   }
 
-  const all = results.flatMap((r) => r.findings);
+  return summarise(repoRelPath, results, [], total());
+}
+
+/** A pack that produced no verdict, and why. Never a finding, never a block. */
+function notRun(
+  pack: LoadedPack,
+  status: "untrusted" | "skipped",
+  detail: string,
+  durationMs: number,
+): GateResult {
   return {
-    path: repoRelPath,
+    pack: pack.standard.name,
+    severity: pack.standard.severity,
+    findings: [],
+    durationMs,
+    status,
+    detail,
+  };
+}
+
+/**
+ * Fold results into the summary the hook reads.
+ *
+ * `health` exists because "the standards gates passed" and "the standards gates
+ * did not run" were previously the same observable state: the hook checked
+ * `results.length > 0` and recorded a tick. A pack whose rule threw, or was
+ * never approved, or ran out of budget therefore reported as a pass, which is
+ * the single worst thing a gate can do.
+ */
+function summarise(
+  path: string,
+  results: readonly GateResult[],
+  skippedPacks: readonly string[],
+  durationMs: number,
+): GateRunSummary {
+  const all = results.flatMap((r) => r.findings);
+  const names = (status: GateStatus): string[] =>
+    results.filter((r) => r.status === status).map((r) => r.pack);
+
+  const ran = names("ok");
+  const errored = names("error");
+  const untrusted = names("untrusted");
+  const skipped = [...names("skipped"), ...skippedPacks];
+
+  const parts: string[] = [];
+  if (errored.length > 0) parts.push(`${errored.length} errored (${errored.join(", ")})`);
+  if (untrusted.length > 0) parts.push(`${untrusted.length} not approved to run (${untrusted.join(", ")})`);
+  if (skipped.length > 0) parts.push(`${skipped.length} skipped (${skipped.join(", ")})`);
+
+  return {
+    path,
     results,
     blocking: all.filter((f) => f.severity === "high"),
     advisory: all.filter((f) => f.severity !== "high"),
-    durationMs: total(),
+    durationMs,
+    health: {
+      ran,
+      errored,
+      untrusted,
+      skipped,
+      complete: errored.length === 0 && untrusted.length === 0 && skipped.length === 0,
+      detail: parts.join("; "),
+    },
   };
 }
 
@@ -164,11 +296,19 @@ async function runTsPack(
   options: RunGatesOptions,
   pack: LoadedPack,
   context: GateContext,
+  timeoutMs: number,
 ): Promise<GateResult> {
   const timer = stopwatch();
-  const loaded = await loadRule(options.repoRoot, pack);
+  const loaded = await loadRule(options.repoRoot, options.pluginRoot, pack);
 
-  if (!loaded.ok) {
+  if (loaded.kind === "untrusted") {
+    // Not a failure: a repo-local rule is code, and this repository has not
+    // approved running it. Reported, never blocking — `keel trust` is the way
+    // in, and a hook must not prompt.
+    return notRun(pack, "untrusted", loaded.reason, timer());
+  }
+
+  if (loaded.kind === "error") {
     // A broken rule reports an error and lets the edit through. A pack that
     // fails to compile must not block everyone who touches a matching file.
     logDebug("gate rule unavailable", { pack: pack.standard.name, error: loaded.error });
@@ -177,22 +317,29 @@ async function runTsPack(
       severity: pack.standard.severity,
       findings: [],
       durationMs: timer(),
+      status: "error",
       error: loaded.error,
     };
   }
 
-  const rule = loaded.value;
-  if (rule === null) {
-    return { pack: pack.standard.name, severity: pack.standard.severity, findings: [], durationMs: timer() };
+  if (loaded.kind === "none") {
+    return {
+      pack: pack.standard.name,
+      severity: pack.standard.severity,
+      findings: [],
+      durationMs: timer(),
+      status: "ok",
+    };
   }
 
   try {
-    const raw = await withTimeout(rule(context), RULE_TIMEOUT_MS, pack.standard.name);
+    const raw = await withTimeout(loaded.rule(context), timeoutMs, pack.standard.name);
     return {
       pack: pack.standard.name,
       severity: pack.standard.severity,
       findings: reportable(raw, pack, context),
       durationMs: timer(),
+      status: "ok",
     };
   } catch (cause) {
     return {
@@ -200,6 +347,7 @@ async function runTsPack(
       severity: pack.standard.severity,
       findings: [],
       durationMs: timer(),
+      status: "error",
       error: errorMessage(cause),
     };
   }
@@ -219,13 +367,30 @@ function runPythonPacks(
   repoRelPath: string,
   source: string,
   changed: ReadonlySet<number>,
+  budgetLeftMs: number,
 ): GateResult[] {
+  const out: GateResult[] = [];
+
+  // `rule.py` is handed to the interpreter and executed there — the same
+  // decision as importing a `rule.ts`, so the same approval gates it.
+  const runnable: LoadedPack[] = [];
+  for (const pack of packs) {
+    const trust = ruleTrust(options.repoRoot, options.pluginRoot, pack, pack.rulePyPath ?? "");
+    if (trust.kind === "untrusted") {
+      logDebug("pack rule not run: untrusted", { pack: pack.standard.name, reason: trust.reason });
+      out.push(notRun(pack, "untrusted", trust.reason, 0));
+      continue;
+    }
+    runnable.push(pack);
+  }
+  if (runnable.length === 0) return out;
+
   const timer = stopwatch();
   const request = {
     path: repoRelPath,
     source,
     changed_lines: [...changed],
-    packs: packs.map((p) => ({
+    packs: runnable.map((p) => ({
       name: p.standard.name,
       rule_path: p.rulePyPath,
       config: p.standard.config,
@@ -235,7 +400,9 @@ function runPythonPacks(
   const res = exec(pythonBin(), ["-m", "keel_gates.run"], {
     cwd: `${options.pluginRoot}/python`,
     input: JSON.stringify(request),
-    timeoutMs: 10_000,
+    // Never past what is left of the whole-file budget: the interpreter is one
+    // more thing that must not push the hook past its own timeout.
+    timeoutMs: Math.max(1, Math.min(10_000, Math.round(budgetLeftMs))),
   });
 
   const elapsed = timer();
@@ -243,30 +410,37 @@ function runPythonPacks(
   if (!res.ok || res.value.code !== 0) {
     const error = res.ok ? res.value.stderr.trim() || `exit ${res.value.code}` : res.error;
     logDebug("python gate runner failed", { error });
-    return packs.map((p) => ({
-      pack: p.standard.name,
-      severity: p.standard.severity,
-      findings: [],
-      durationMs: elapsed,
-      error,
-    }));
+    for (const p of runnable) {
+      out.push({
+        pack: p.standard.name,
+        severity: p.standard.severity,
+        findings: [],
+        durationMs: elapsed,
+        status: "error",
+        error,
+      });
+    }
+    return out;
   }
 
   let parsed: PythonGateResponse;
   try {
     parsed = JSON.parse(res.value.stdout) as PythonGateResponse;
   } catch (cause) {
-    return packs.map((p) => ({
-      pack: p.standard.name,
-      severity: p.standard.severity,
-      findings: [],
-      durationMs: elapsed,
-      error: errorMessage(cause),
-    }));
+    for (const p of runnable) {
+      out.push({
+        pack: p.standard.name,
+        severity: p.standard.severity,
+        findings: [],
+        durationMs: elapsed,
+        status: "error",
+        error: errorMessage(cause),
+      });
+    }
+    return out;
   }
 
-  const byName = new Map(packs.map((p) => [p.standard.name, p]));
-  const out: GateResult[] = [];
+  const byName = new Map(runnable.map((p) => [p.standard.name, p]));
   for (const entry of parsed.results) {
     const pack = byName.get(entry.pack);
     if (pack === undefined) continue;
@@ -281,6 +455,7 @@ function runPythonPacks(
         ast: null,
       }),
       durationMs: elapsed,
+      status: entry.error === undefined ? "ok" : "error",
       ...(entry.error === undefined ? {} : { error: entry.error }),
     });
   }
@@ -325,15 +500,54 @@ function reportable(
   return out.sort((a, b) => a.line - b.line || a.pack.localeCompare(b.pack));
 }
 
+/**
+ * Caps on what a blocking message may cost.
+ *
+ * This text is stderr from a PostToolUse hook, which means it is fed straight
+ * back into the model's context. One edit to an 18 MB file rendered 146 KB of
+ * findings — roughly 35k tokens — and the model then had to read all of it to
+ * find out what to change. Twenty findings is already more than anyone acts on
+ * in one pass, and a rule is free to return a message of any length, so both
+ * the count and the size are bounded. Truncation always says so: silently
+ * dropping findings would be worse than printing them.
+ */
+export const MAX_RENDERED_FINDINGS = 20;
+export const MAX_BLOCKING_CHARS = 8000;
+const MAX_FIELD_CHARS = 300;
+
+function clip(text: string, limit = MAX_FIELD_CHARS): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= limit ? flat : `${flat.slice(0, limit - 1)}…`;
+}
+
 /** Render a blocking summary for a hook's stderr. */
 export function formatBlocking(summary: GateRunSummary): string {
-  const lines = ["Keel standards gate blocked this edit:", ""];
+  const header = ["Keel standards gate blocked this edit:", ""];
+  const footer = "Gates evaluate only the lines this change touched.";
+
+  const lines: string[] = [];
+  let size = 0;
+  let shown = 0;
+
   for (const f of summary.blocking) {
-    lines.push(`  ${f.path}:${f.line}${f.column === undefined ? "" : `:${f.column}`}  [${f.pack}]`);
-    lines.push(`    ${f.message}`);
-    lines.push(`    fix: ${f.fix}`);
-    lines.push("");
+    if (shown >= MAX_RENDERED_FINDINGS) break;
+    const block = [
+      `  ${f.path}:${f.line}${f.column === undefined ? "" : `:${f.column}`}  [${f.pack}]`,
+      `    ${clip(f.message)}`,
+      `    fix: ${clip(f.fix)}`,
+      "",
+    ];
+    const cost = block.reduce((n, l) => n + l.length + 1, 0);
+    if (shown > 0 && size + cost > MAX_BLOCKING_CHARS) break;
+    lines.push(...block);
+    size += cost;
+    shown++;
   }
-  lines.push("Gates evaluate only the lines this change touched.");
-  return lines.join("\n");
+
+  const hidden = summary.blocking.length - shown;
+  if (hidden > 0) {
+    lines.push(`  …and ${hidden} more finding${hidden === 1 ? "" : "s"} not shown.`, "");
+  }
+
+  return [...header, ...lines, footer].join("\n");
 }

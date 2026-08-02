@@ -4,7 +4,8 @@ import { applyOverride, classify } from "../../router/classify.js";
 import { collectSignals } from "../../router/signals.js";
 import { record } from "../../telemetry/spool.js";
 import { EFFORT_LEVELS, setEffortLevel, type EffortLevel } from "../../shared/settings.js";
-import { bold, cyan, dim, heading, info, line, rows } from "../output.js";
+import { configHealth, configWarning } from "../config-health.js";
+import { bold, cyan, detail, dim, heading, info, line, rows, warn } from "../output.js";
 
 /**
  * `keel route` — classify the current change.
@@ -26,6 +27,14 @@ export interface RouteOptions {
 
 export async function route(options: RouteOptions): Promise<number> {
   const { config } = loadConfigOrDefaults(options.repoRoot);
+
+  // A config that will not parse degrades to defaults everywhere, which is the
+  // right call for a hook and the wrong one to do in silence for a person:
+  // `force_full_globs` stops applying and migrations stop routing to full.
+  // `check` and `doctor` both flag this; the router used to be the exception.
+  const health = configHealth(options.repoRoot);
+  const problem = configWarning(options.repoRoot, health);
+
   const timer = stopwatch();
 
   const signals = await collectSignals(options.repoRoot, config, {
@@ -78,9 +87,16 @@ export async function route(options: RouteOptions): Promise<number> {
         effort,
         durationMs: ms,
         ...(applied === null ? {} : { effortApplied: applied }),
+        ...(problem === null ? {} : { configWarning: problem.message, configFix: problem.fix }),
       }),
     );
     return 0;
+  }
+
+  if (problem !== null) {
+    heading("Configuration");
+    warn(problem.message);
+    detail(`fix: ${problem.fix}`);
   }
 
   heading("Route");

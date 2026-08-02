@@ -23,7 +23,11 @@ dependencies:
     version: "6.2.0"
     source: "obra/superpowers"
     role: install
-    install: "claude plugin marketplace add obra/superpowers"
+    # The `#v6.2.0` is load-bearing. Without a ref this command adds the
+    # marketplace at whatever the default branch happens to be, and the
+    # `version:` above becomes a comment nothing enforces. `keel check` now
+    # rejects a plugin install command that does not carry its pin.
+    install: "claude plugin marketplace add obra/superpowers#v6.2.0"
     # mirror: "internal-marketplace/superpowers@6.2.0"
     owns: [planning, implementation]
     note: >-

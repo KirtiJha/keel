@@ -1,5 +1,5 @@
-import { existsSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const CONFIG_BASENAME = "keel.config.yaml";
 export const KEEL_DIR = ".keel";
@@ -46,10 +46,151 @@ export function toRepoRelative(root: string, filePath: string): string {
   return rel.split(sep).join("/");
 }
 
-/** True when `filePath` is inside `root` (rejects `../` escapes and absolute strays). */
+/**
+ * True when `filePath` is strictly inside `root` (rejects `../` escapes and
+ * absolute strays).
+ *
+ * Lexical only: it does not touch the filesystem, so a symlink inside the repo
+ * that points out of it still passes. For a configured path — where the value
+ * is attacker-influenceable and the repo may ship symlinks — use
+ * `resolveConfiguredPath`, which layers symlink resolution on top of this and
+ * hands back a safe fallback.
+ *
+ * `root` itself is *not* inside `root`: the callers of this predicate are asking
+ * about a file within the tree, and "the tree" is never the answer.
+ */
 export function isInsideRepo(root: string, filePath: string): boolean {
   const rel = toRepoRelative(root, filePath);
-  return rel !== "" && !rel.startsWith("../") && !isAbsolute(rel);
+  // `..` alone is an escape too — it does not start with `../`, which is how
+  // the repo's own parent slipped through a prefix-only check.
+  return rel !== "" && rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel);
+}
+
+/**
+ * True when `candidate` is at or inside `root`, comparing lexically.
+ *
+ * Unlike `isInsideRepo`, `root` itself counts as contained: a configured path of
+ * `.` is degenerate, but it is not an escape and rejecting it would be a lie.
+ */
+function containsPath(root: string, candidate: string): boolean {
+  const rel = relative(resolve(root), resolve(candidate)).split(sep).join("/");
+  return rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel));
+}
+
+/**
+ * Resolve symlinks on the longest existing prefix of `p`, keeping the rest.
+ *
+ * A configured directory usually does not exist yet — the telemetry spool is
+ * created on first write — so `realpathSync` on the whole path would throw and
+ * tell us nothing. Resolving the part that *does* exist is what catches a
+ * committed `\.keel -> /somewhere/outside` symlink.
+ */
+function realPathOfExistingPrefix(p: string): string {
+  const abs = resolve(p);
+  const tail: string[] = [];
+  let current = abs;
+
+  // Depth is a hard stop: a pathological path must not spin here.
+  for (let i = 0; i < 64; i++) {
+    try {
+      const real = realpathSync(current);
+      return tail.length === 0 ? real : join(real, ...tail);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return abs;
+      tail.unshift(basename(current));
+      current = parent;
+    }
+  }
+  return abs;
+}
+
+/**
+ * True when `candidate` lands outside `root`.
+ *
+ * Catches all three forms: a `../` walk, an absolute stray, and an escape
+ * through a symlink on whatever part of the path already exists. `candidate`
+ * need not exist, and may be relative — it is resolved against `root`.
+ *
+ * `root` is resolved through symlinks too. Without that, a repo checked out
+ * under a symlinked directory (macOS hands out `/tmp/x` for `/private/tmp/x`)
+ * would report every one of its own files as an escape.
+ *
+ * Never throws. When containment cannot be established it returns true, because
+ * an unestablished guarantee is not a guarantee.
+ */
+export function escapesRepo(root: string, candidate: string): boolean {
+  try {
+    const abs = isAbsolute(candidate) ? resolve(candidate) : resolve(root, candidate);
+    if (!containsPath(root, abs)) return true;
+    return !containsPath(realPathOfExistingPrefix(root), realPathOfExistingPrefix(abs));
+  } catch {
+    return true;
+  }
+}
+
+export interface ConfiguredPath {
+  /** Absolute path to use. Guaranteed inside the repo. */
+  readonly path: string;
+  /** False when the configured value escaped and `path` is the fallback. */
+  readonly ok: boolean;
+  /** Actionable message naming the offending config key. Null when `ok`. */
+  readonly error: string | null;
+}
+
+export interface ConfiguredPathOptions {
+  /** Dotted config key, e.g. `telemetry.path` — named in the error. */
+  readonly key: string;
+  /** Repo-relative default, used when the configured value is rejected. */
+  readonly fallback: string;
+}
+
+/**
+ * Resolve a path that came from `keel.config.yaml` against the repo root,
+ * refusing anything that leaves the repo.
+ *
+ * Every configured path Keel reads or writes — `standards.dirs`,
+ * `telemetry.path`, `spec.dir` — goes through here. Config is committed, so a
+ * hostile or careless value is a repo-supplied one: `../../../../tmp/evil` and
+ * `/tmp/evil` both used to resolve straight through, executing packs and
+ * writing spool files outside the working tree.
+ *
+ * Rejection is never silent and never fatal. Callers get the documented default
+ * back, so the feature keeps working, plus an error naming the offending key to
+ * log or print. Hooks must fail open: reject the path, log, carry on.
+ *
+ * ```ts
+ * const dir = resolveConfiguredPath(root, config.telemetry.path, {
+ *   key: "telemetry.path",
+ *   fallback: DEFAULT_TELEMETRY_PATH,
+ * });
+ * if (!dir.ok) logWarn(dir.error ?? "");
+ * use(dir.path);
+ * ```
+ */
+export function resolveConfiguredPath(
+  root: string,
+  configured: string,
+  options: ConfiguredPathOptions,
+): ConfiguredPath {
+  const { key, fallback } = options;
+
+  if (!escapesRepo(root, configured)) {
+    return { path: resolve(root, configured), ok: true, error: null };
+  }
+
+  // A fallback is a Keel constant, so this only fires if one is ever mistyped —
+  // and the repo root is the one path that cannot escape the repo.
+  const safe = escapesRepo(root, fallback) ? resolve(root) : resolve(root, fallback);
+
+  return {
+    path: safe,
+    ok: false,
+    error:
+      `${key}: "${configured}" resolves outside the repository and has been ignored — ` +
+      `Keel only reads and writes inside the repo. Using "${fallback}" instead. ` +
+      `Fix: set ${key} to a repo-relative path such as "${fallback}".`,
+  };
 }
 
 /**

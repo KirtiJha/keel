@@ -1,21 +1,57 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { loadPacks } from "../../src/standards/loader.js";
 import { resetRuleCache } from "../../src/standards/rule-loader.js";
-import { applicablePacks, formatBlocking, languageOf, runGates } from "../../src/standards/runner.js";
+import {
+  MAX_BLOCKING_CHARS,
+  MAX_GATED_FILE_CHARS,
+  MAX_RENDERED_FINDINGS,
+  applicablePacks,
+  formatBlocking,
+  languageOf,
+  runGates,
+} from "../../src/standards/runner.js";
+import { resetTrustCache, trustRule } from "../../src/standards/trust.js";
 
 import { PLUGIN_ROOT, TempRepo } from "../helpers/temp-repo.js";
 
 let repo: TempRepo;
+let keelHome: string;
 
 beforeEach(() => {
   repo = TempRepo.create("keel-runner-");
+  // Approvals are signed with a machine-local key; keep it out of the
+  // developer's real home directory.
+  keelHome = mkdtempSync(join(tmpdir(), "keel-home-"));
+  process.env["KEEL_HOME"] = keelHome;
   resetRuleCache();
+  resetTrustCache();
 });
 
 afterEach(() => {
   repo.dispose();
+  rmSync(keelHome, { recursive: true, force: true });
+  delete process.env["KEEL_HOME"];
 });
+
+/**
+ * Approve a repo-local pack, as `keel trust` does.
+ *
+ * Repo-local rules are code the repository supplies, and they do not run until
+ * a human says so — see `src/standards/trust.ts`. Every fixture pack below is
+ * therefore approved before it is expected to fire.
+ */
+function trust(name: string): void {
+  const result = trustRule(
+    { repoRoot: repo.root, pluginRoot: PLUGIN_ROOT, config: repo.config() },
+    name,
+  );
+  if (!result.ok) throw new Error(result.error);
+}
 
 /** A pack that reports a finding on every line, so filtering is observable. */
 function everyLinePack(name: string, severity = "high"): void {
@@ -44,6 +80,7 @@ function everyLinePack(name: string, severity = "high"): void {
       "export default rule;",
     ].join("\n"),
   );
+  trust(name);
 }
 
 describe("language detection", () => {
@@ -152,6 +189,7 @@ describe("diff-only enforcement", () => {
         "export default rule;",
       ].join("\n"),
     );
+    trust("liar");
     repo.write("src/fresh.ts", "const a = 1;\n");
 
     const summary = await runGates({
@@ -202,6 +240,7 @@ describe("failure modes", () => {
       "standards/thrower/rule.ts",
       "const rule = () => { throw new Error('boom'); };\nexport default rule;\n",
     );
+    trust("thrower");
     repo.write("src/fresh.ts", "const a = 1;\n");
 
     const summary = await runGates({
@@ -229,6 +268,7 @@ describe("failure modes", () => {
       ].join("\n"),
     );
     repo.write("standards/broken-rule/rule.ts", "export const notARule = 42;\n");
+    trust("broken-rule");
     repo.write("src/fresh.ts", "const a = 1;\n");
 
     const summary = await runGates({
@@ -251,6 +291,204 @@ describe("failure modes", () => {
         filePath: "src/does-not-exist.ts",
       }),
     ).resolves.toMatchObject({ blocking: [], advisory: [] });
+  });
+});
+
+/**
+ * Defect 3: a pack that errored used to be indistinguishable from a pack that
+ * passed. The hook recorded a tick whenever `results.length > 0`, so a dead
+ * gate reported success on every edit it should have been checking.
+ */
+describe("a dead gate is not a passing gate", () => {
+  it("separates a rule that failed from a rule that ran", async () => {
+    everyLinePack("works", "low");
+    repo.write(
+      "standards/thrower/standard.yaml",
+      [
+        "name: thrower",
+        "mode: gate",
+        'applies_to: ["src/**/*.ts"]',
+        "languages: [typescript]",
+        "owner: test-team",
+        "severity: high",
+        'description: "Throws."',
+      ].join("\n"),
+    );
+    repo.write(
+      "standards/thrower/rule.ts",
+      "const rule = () => { throw new Error('boom'); };\nexport default rule;\n",
+    );
+    trust("thrower");
+    repo.write("src/fresh.ts", "const a = 1;\n");
+
+    const summary = await runGates({
+      repoRoot: repo.root,
+      pluginRoot: PLUGIN_ROOT,
+      config: repo.config(),
+      filePath: "src/fresh.ts",
+    });
+
+    expect(summary.health.errored).toEqual(["thrower"]);
+    expect(summary.health.ran).toContain("works");
+    expect(summary.health.complete).toBe(false);
+    expect(summary.health.detail).toContain("thrower");
+    // And the edit still goes through: a broken pack blocks nobody.
+    expect(summary.blocking).toEqual([]);
+  });
+
+  it("reports a clean run as complete, with nothing to explain", async () => {
+    everyLinePack("every-line");
+    repo.write("src/fresh.ts", "const a = 1;\n");
+
+    const summary = await runGates({
+      repoRoot: repo.root,
+      pluginRoot: PLUGIN_ROOT,
+      config: repo.config(),
+      filePath: "src/fresh.ts",
+    });
+
+    expect(summary.health.complete).toBe(true);
+    expect(summary.health.detail).toBe("");
+    expect(summary.health.ran).toContain("every-line");
+  });
+});
+
+/**
+ * Defect 5: `RULE_TIMEOUT_MS` bounds one rule, and packs are awaited in
+ * sequence, so nothing bounded the sum. Twenty packs each returning a promise
+ * that never settles ran the hook for 40.9 s against a registered 30 s timeout.
+ */
+describe("the whole run is bounded, not just each rule", () => {
+  function spinnerPack(name: string): void {
+    repo.write(
+      `standards/${name}/standard.yaml`,
+      [
+        `name: ${name}`,
+        "mode: gate",
+        'applies_to: ["src/**/*.ts"]',
+        "languages: [typescript]",
+        "owner: test-team",
+        "severity: high",
+        'description: "Never resolves."',
+      ].join("\n"),
+    );
+    repo.write(
+      `standards/${name}/rule.ts`,
+      "const rule = () => new Promise<[]>(() => undefined);\nexport default rule;\n",
+    );
+    trust(name);
+  }
+
+  it("stops starting packs once the budget is gone, and says which it skipped", async () => {
+    for (const name of ["spin-a", "spin-b", "spin-c", "spin-d", "spin-e"]) spinnerPack(name);
+    repo.write("src/fresh.ts", "const a = 1;\n");
+
+    const started = Date.now();
+    const summary = await runGates({
+      repoRoot: repo.root,
+      pluginRoot: PLUGIN_ROOT,
+      config: repo.config(),
+      filePath: "src/fresh.ts",
+      budgetMs: 400,
+    });
+    const elapsed = Date.now() - started;
+
+    // Five packs at the 2 s per-rule timeout would be 10 s.
+    expect(elapsed).toBeLessThan(3000);
+    expect(summary.health.skipped.length).toBeGreaterThanOrEqual(3);
+    expect(summary.health.complete).toBe(false);
+    expect(summary.health.detail).toContain("skipped");
+    expect(summary.blocking).toEqual([]);
+
+    const skipped = summary.results.find((r) => r.status === "skipped");
+    expect(skipped?.detail).toContain("budget");
+  }, 30_000);
+});
+
+/**
+ * Defect 4: `formatBlocking` rendered every finding, and this text is stderr
+ * from a PostToolUse hook — it goes straight into the model's context. One edit
+ * to an 18 MB file produced 146 KB of it.
+ */
+describe("blocking output is bounded", () => {
+  it("caps how many findings it renders and says how many it dropped", async () => {
+    everyLinePack("every-line");
+    repo.write("src/fresh.ts", Array.from({ length: 400 }, (_, i) => `const a${i} = ${i};`).join("\n"));
+
+    const summary = await runGates({
+      repoRoot: repo.root,
+      pluginRoot: PLUGIN_ROOT,
+      config: repo.config(),
+      filePath: "src/fresh.ts",
+    });
+    expect(summary.blocking.length).toBeGreaterThan(300);
+
+    const text = formatBlocking(summary);
+    const rendered = text.split("\n").filter((l) => l.includes("[every-line]")).length;
+
+    expect(rendered).toBeLessThanOrEqual(MAX_RENDERED_FINDINGS);
+    expect(text.length).toBeLessThanOrEqual(MAX_BLOCKING_CHARS + 1000);
+    expect(text).toContain(`…and ${summary.blocking.length - rendered} more findings not shown.`);
+    // Truncated or not, it still says what a gate message has to say.
+    expect(text).toContain("src/fresh.ts:1");
+    expect(text).toContain("fix: do something else");
+  });
+
+  it("clips a single enormous message rather than passing it through", async () => {
+    repo.write(
+      "standards/verbose/standard.yaml",
+      [
+        "name: verbose",
+        "mode: gate",
+        'applies_to: ["src/**/*.ts"]',
+        "languages: [typescript]",
+        "owner: test-team",
+        "severity: high",
+        'description: "Says far too much."',
+      ].join("\n"),
+    );
+    repo.write(
+      "standards/verbose/rule.ts",
+      [
+        "import type { Finding } from '../../src/standards/types.js';",
+        "const rule = (): Finding[] => [",
+        "  { line: 1, message: 'x'.repeat(50000), fix: 'y'.repeat(50000) },",
+        "];",
+        "export default rule;",
+      ].join("\n"),
+    );
+    trust("verbose");
+    repo.write("src/fresh.ts", "const a = 1;\n");
+
+    const summary = await runGates({
+      repoRoot: repo.root,
+      pluginRoot: PLUGIN_ROOT,
+      config: repo.config(),
+      filePath: "src/fresh.ts",
+    });
+
+    expect(summary.blocking).toHaveLength(1);
+    expect(formatBlocking(summary).length).toBeLessThan(2000);
+  });
+
+  it("does not parse or check a file far larger than any source file", async () => {
+    everyLinePack("every-line");
+    const huge = `${Array.from({ length: 40_000 }, (_, i) => `const a${i} = ${i};`).join("\n")}\n`;
+    expect(huge.length).toBeGreaterThan(MAX_GATED_FILE_CHARS);
+    repo.write("src/huge.ts", huge);
+
+    const started = Date.now();
+    const summary = await runGates({
+      repoRoot: repo.root,
+      pluginRoot: PLUGIN_ROOT,
+      config: repo.config(),
+      filePath: "src/huge.ts",
+    });
+
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(summary.blocking).toEqual([]);
+    expect(summary.results).toEqual([]);
+    expect(summary.health.skipped).toContain("every-line");
   });
 });
 
@@ -319,6 +557,9 @@ describe("M4 acceptance — a new pack is a folder plus a PR", () => {
         "export default rule;",
       ].join("\n"),
     );
+    // The one step that is not "a folder plus a PR": someone with the repo open
+    // approves the rule once. Code the repo supplies does not run unasked.
+    trust("no-console-log");
 
     repo.write("src/thing.ts", "export function go(): void {\n  console.log('hi');\n}\n");
 

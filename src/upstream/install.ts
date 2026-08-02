@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { exec } from "../shared/exec.js";
@@ -68,14 +69,13 @@ function npmInstalledVersion(root: string, packageName: string): string | null {
 }
 
 /**
- * Is a plugin marketplace registered?
+ * Is a plugin marketplace registered in this repository's settings?
  *
- * Best-effort, and deliberately so. Claude Code keeps its plugin cache outside
- * the repository, and reading someone's home directory to answer a status
- * question is not a trade worth making. A repo that declares the marketplace in
- * `.claude/settings.json` counts as configured; anything else is unverifiable
- * rather than missing, because reporting "missing" for something that is in
- * fact installed would send people chasing a problem they do not have.
+ * A weak signal, and it must not be mistaken for a version. Declaring a
+ * marketplace in `.claude/settings.json` says the repo would like the plugin
+ * available; it says nothing about which version, or whether it was installed
+ * at all. Treating a string match as "installed" is what made `wrong-version`
+ * unreachable for plugin dependencies — the one state the lock exists to catch.
  */
 function marketplaceDeclared(root: string, source: string): boolean {
   const path = join(root, ".claude", "settings.json");
@@ -85,6 +85,115 @@ function marketplaceDeclared(root: string, source: string): boolean {
   } catch {
     return false;
   }
+}
+
+function readJson(path: string): Record<string, unknown> | null {
+  if (!isFile(path)) return null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where Claude Code keeps installed plugins.
+ *
+ * `CLAUDE_CONFIG_DIR` wins when set — Claude Code honours it, and it is what
+ * makes this testable without touching a real home directory. The repository's
+ * own `.claude/plugins` is searched too, for a project-scoped install.
+ */
+export function pluginCacheRoots(repoRoot: string): string[] {
+  const configured = process.env["CLAUDE_CONFIG_DIR"];
+  const home = configured !== undefined && configured !== "" ? configured : join(homedir(), ".claude");
+  return [...new Set([join(repoRoot, ".claude", "plugins"), join(home, "plugins")])];
+}
+
+export interface FoundPlugin {
+  readonly version: string;
+  /** Manifest the version was read from, for the status detail line. */
+  readonly manifest: string;
+}
+
+/** Candidate names a lock entry might be known by inside the plugin cache. */
+function pluginNames(name: string, dependency: UpstreamDependency): string[] {
+  const repoPart = dependency.source.split("#")[0]?.split("/").pop() ?? "";
+  return [...new Set([dependency.marketplace_name ?? "", name, repoPart].filter((n) => n !== ""))];
+}
+
+/**
+ * The version of an installed plugin, read from its own manifest.
+ *
+ * Claude Code lays a marketplace out as a checkout with a
+ * `.claude-plugin/marketplace.json` listing its plugins, each of which has a
+ * `.claude-plugin/plugin.json` carrying the real version. Both shapes are read,
+ * because which one is on disk depends on how the marketplace was added.
+ *
+ * Returns null when nothing can be read — which stays `unverifiable`. Reporting
+ * "missing" for a plugin that is in fact installed sends people chasing a
+ * problem they do not have; the cache is outside the repo and may simply be
+ * unreadable from here.
+ */
+export function installedPluginVersion(
+  repoRoot: string,
+  name: string,
+  dependency: UpstreamDependency,
+): FoundPlugin | null {
+  const names = pluginNames(name, dependency);
+
+  for (const cache of pluginCacheRoots(repoRoot)) {
+    if (!isDirectory(cache)) continue;
+
+    const bases: string[] = [];
+    for (const candidate of names) {
+      bases.push(join(cache, candidate));
+      bases.push(join(cache, "marketplaces", candidate));
+      bases.push(join(cache, "repos", candidate));
+    }
+    // `repos/<owner>/<repo>` keeps the owner segment.
+    const owned = dependency.source.split("#")[0] ?? dependency.source;
+    if (owned.includes("/")) {
+      bases.push(join(cache, "repos", ...owned.split("/")));
+      bases.push(join(cache, "marketplaces", ...owned.split("/")));
+    }
+
+    for (const base of [...new Set(bases)]) {
+      const plugin = readJson(join(base, ".claude-plugin", "plugin.json"));
+      const version = plugin?.["version"];
+      if (typeof version === "string" && version !== "") {
+        return { version, manifest: join(base, ".claude-plugin", "plugin.json") };
+      }
+
+      const marketplacePath = join(base, ".claude-plugin", "marketplace.json");
+      const marketplace = readJson(marketplacePath);
+      const listed = marketplace?.["plugins"];
+      if (!Array.isArray(listed)) continue;
+
+      for (const entry of listed) {
+        if (typeof entry !== "object" || entry === null) continue;
+        const record = entry as Record<string, unknown>;
+        const entryName = record["name"];
+        const entryVersion = record["version"];
+        if (
+          typeof entryName === "string" &&
+          names.includes(entryName) &&
+          typeof entryVersion === "string" &&
+          entryVersion !== ""
+        ) {
+          return { version: entryVersion, manifest: marketplacePath };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/** `6.2.0` and `v6.2.0` are the same pin. */
+function sameVersion(a: string, b: string): boolean {
+  return a.replace(/^v/, "") === b.replace(/^v/, "");
 }
 
 /** Compare what is pinned against what is actually present. */
@@ -126,13 +235,39 @@ export function upstreamStatus(root: string, lock: UpstreamLock): DependencyStat
     }
 
     if (kind === "plugin") {
+      const found = installedPluginVersion(root, name, dependency);
+
+      if (found !== null) {
+        out.push(
+          sameVersion(found.version, dependency.version)
+            ? {
+                name,
+                pinned: dependency.version,
+                state: "installed",
+                found: found.version,
+                detail: `${found.version} per ${found.manifest}`,
+              }
+            : {
+                name,
+                pinned: dependency.version,
+                state: "wrong-version",
+                found: found.version,
+                detail: `installed ${found.version}, pinned ${dependency.version} (per ${found.manifest})`,
+              },
+        );
+        continue;
+      }
+
+      // No manifest anywhere we can read. A declared marketplace is worth
+      // saying out loud, but it is not a version and must not be reported as
+      // one: `unverifiable` is the honest answer.
       const declared = marketplaceDeclared(root, dependency.source);
       out.push({
         name,
         pinned: dependency.version,
-        state: declared ? "installed" : "unverifiable",
+        state: "unverifiable",
         detail: declared
-          ? `marketplace ${dependency.source} declared in .claude/settings.json`
+          ? `marketplace ${dependency.source} is declared in .claude/settings.json, but no plugin manifest was readable — the installed version is unknown; check with \`/plugin\``
           : `plugin install state lives outside the repo — check with \`/plugin\``,
       });
       continue;

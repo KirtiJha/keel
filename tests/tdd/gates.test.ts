@@ -8,7 +8,13 @@ import {
   gateTestWeakening,
 } from "../../src/tdd/gates.js";
 import { findOverrides } from "../../src/tdd/vocabulary.js";
-import { isTestFile, specifierTargetsModule, stemOf, testCandidatesFor } from "../../src/tdd/pairing.js";
+import {
+  existingTestFor,
+  isTestFile,
+  specifierTargetsModule,
+  stemOf,
+  testCandidatesFor,
+} from "../../src/tdd/pairing.js";
 import { defaultConfig } from "../../src/shared/config.js";
 
 import { PLUGIN_ROOT, TempRepo } from "../helpers/temp-repo.js";
@@ -334,9 +340,13 @@ describe("gate 2 — mocking the unit under test", () => {
         "        assert True",
       ].join("\n"),
     );
-    // `app.service` -> stem `service`, matching test_service.py.
+    // A `unittest.mock` target is `module.attribute`: `app.service.charge` is
+    // the function `charge` *inside* `app.service`, which is exactly the module
+    // `test_service.py` exists to exercise. Comparing only the last segment
+    // meant this gate caught nothing at all in Python.
     const outcome = gateMockUnderTest("tests/test_service.py", analysis);
-    expect(outcome.violations).toEqual([]);
+    expect(outcome.violations).toHaveLength(1);
+    expect(outcome.violations[0]?.message).toContain("app.service.charge");
 
     const direct = await analyse(
       "tests/test_service.py",
@@ -349,6 +359,23 @@ describe("gate 2 — mocking the unit under test", () => {
     const analysis = await analyse(
       "tests/test_service.py",
       ["from unittest.mock import patch", "", "", "def test_x():", "    with patch('app.gateway'):", "        assert True"].join("\n"),
+    );
+    expect(gateMockUnderTest("tests/test_service.py", analysis).violations).toEqual([]);
+  });
+
+  it("allows a Python test that patches an attribute of a collaborator", async () => {
+    // `other.module.thing` is a function inside `other.module`. Nothing in it
+    // is the module under test, and matching any segment would fire here.
+    const analysis = await analyse(
+      "tests/test_service.py",
+      [
+        "from unittest.mock import patch",
+        "",
+        "",
+        "def test_x():",
+        "    with patch('other.module.thing'):",
+        "        assert True",
+      ].join("\n"),
     );
     expect(gateMockUnderTest("tests/test_service.py", analysis).violations).toEqual([]);
   });
@@ -434,6 +461,105 @@ describe("gate 4 — assertion lint (TypeScript)", () => {
     const a = await analyse("src/a.test.ts", "it.skip('later', () => {});");
     expect(gateAssertionLint(a).violations).toEqual([]);
   });
+
+  it("counts assertions a test delegates to a helper in the same file", async () => {
+    // A shared expectation helper is how a readable suite is written. Counting
+    // assertions only inside the test's own source range called this
+    // assertion-free and blocked the edit.
+    const a = await analyse(
+      "src/a.test.ts",
+      [
+        "function expectValidUser(u) { expect(u.ok).toBe(true); expect(u.id).toEqual('7'); }",
+        "it('registers a user', () => { expectValidUser(register()); });",
+      ].join("\n"),
+    );
+
+    expect(a.tests.find((t) => t.name === "registers a user")?.assertions).toBeGreaterThan(0);
+    expect(gateAssertionLint(a).violations).toEqual([]);
+  });
+
+  it("counts assertions reached through a chain of helpers", async () => {
+    const a = await analyse(
+      "src/a.test.ts",
+      [
+        "const expectOk = (u) => { expect(u.ok).toBe(true); };",
+        "function expectValidUser(u) { expectOk(u); }",
+        "it('registers a user', () => expectValidUser(register()));",
+      ].join("\n"),
+    );
+    expect(gateAssertionLint(a).violations).toEqual([]);
+  });
+
+  it("still blocks a test whose helper asserts nothing", async () => {
+    const a = await analyse(
+      "src/a.test.ts",
+      [
+        "function setUpUser(u) { u.ready = true; }",
+        "it('does something', () => { setUpUser(user); });",
+      ].join("\n"),
+    );
+    expect(gateAssertionLint(a).violations[0]?.message).toContain("asserts nothing");
+  });
+
+  it("ignores a describe block that declares no test", async () => {
+    // A `describe` holding only a `beforeEach` has no inner `it`, so it
+    // survives the leaf filter — and was then reported as a test that asserts
+    // nothing, about a block that never claimed to be a test.
+    const a = await analyse(
+      "src/a.test.ts",
+      ["describe('suite', () => {", "  beforeEach(() => { reset(); });", "});"].join("\n"),
+    );
+    expect(gateAssertionLint(a).violations).toEqual([]);
+  });
+
+  it("ignores a describe whose tests are registered by a helper call", async () => {
+    const a = await analyse(
+      "src/a.test.ts",
+      [
+        "function sharedBehaviour() { it('works', () => { expect(1).toBe(1); }); }",
+        "describe('suite', () => { sharedBehaviour(); });",
+      ].join("\n"),
+    );
+    expect(gateAssertionLint(a).violations).toEqual([]);
+  });
+
+  it("honours an override comment above an assertion-free test", async () => {
+    // The escape hatch reached gate 1 only: adding the comment did nothing to
+    // an assertion-lint block, which is worse than having no escape hatch.
+    const source = [
+      "// keel: allow-test-change smoke check that the module loads at all",
+      "it('imports cleanly', () => { loadModule(); });",
+    ].join("\n");
+
+    const outcome = gateAssertionLint(await analyse("src/a.test.ts", source), findOverrides(source));
+    expect(outcome.violations).toEqual([]);
+    expect(outcome.overridden).toBe(true);
+    expect(outcome.overrideReasons[0]).toContain("smoke check");
+  });
+
+  it("honours an override comment inside the test body", async () => {
+    const source = [
+      "it('imports cleanly', () => {",
+      "  // keel: allow-test-change loading is the whole behaviour under test",
+      "  loadModule();",
+      "});",
+    ].join("\n");
+
+    const outcome = gateAssertionLint(await analyse("src/a.test.ts", source), findOverrides(source));
+    expect(outcome.violations).toEqual([]);
+    expect(outcome.overridden).toBe(true);
+  });
+
+  it("ignores a bare override marker with no reason on an assertion-free test", async () => {
+    const source = [
+      "// keel: allow-test-change",
+      "it('does something', () => { add(1, 2); });",
+    ].join("\n");
+
+    const outcome = gateAssertionLint(await analyse("src/a.test.ts", source), findOverrides(source));
+    expect(outcome.violations).toHaveLength(1);
+    expect(outcome.overridden).toBe(false);
+  });
 });
 
 describe("gate 4 — assertion lint (Python)", () => {
@@ -478,11 +604,61 @@ describe("source/test pairing", () => {
     expect(candidates).toContain("tests/test_models.py");
   });
 
+  it("proposes the flat tests/ layout vitest and jest create by default", () => {
+    const candidates = testCandidatesFor("src/util/money.js");
+    // The default of every JS runner in common use, and the one layout the
+    // gate used to declare "no test file exists for this module" about.
+    expect(candidates).toContain("tests/money.test.js");
+    expect(candidates).toContain("tests/money.spec.js");
+    // mocha's singular directory.
+    expect(candidates).toContain("test/money.test.js");
+    // and the layouts that already worked.
+    expect(candidates).toContain("src/util/money.test.js");
+    expect(candidates).toContain("src/util/__tests__/money.test.js");
+    expect(candidates).toContain("tests/util/money.test.js");
+    expect(candidates).toContain("tests/src/util/money.test.js");
+  });
+
+  it("proposes a package-local test tree for a monorepo path", () => {
+    const candidates = testCandidatesFor("packages/api/src/util/money.ts");
+    expect(candidates).toContain("packages/api/tests/util/money.test.ts");
+    expect(candidates).toContain("packages/api/tests/money.test.ts");
+  });
+
+  it("proposes the flat tests/ layout for python too", () => {
+    const candidates = testCandidatesFor("src/util/money.py");
+    expect(candidates).toContain("tests/test_money.py");
+    expect(candidates).toContain("test/test_money.py");
+    expect(candidates).toContain("src/util/test_money.py");
+  });
+
+  it("finds a flat tests/ test file on disk", () => {
+    repo.write("src/util/money.js", "export function toCents(a) { return a * 100; }\n");
+    repo.write("tests/money.test.js", "it('converts', () => { expect(toCents(1)).toBe(100); });\n");
+    expect(existingTestFor(repo.root, "src/util/money.js")).toBe("tests/money.test.js");
+  });
+
+  it("finds a test in a singular test/ directory, mocha's default", () => {
+    repo.write("src/money.js", "export function toCents(a) { return a * 100; }\n");
+    repo.write("test/money.test.js", "it('converts', () => { expect(toCents(1)).toBe(100); });\n");
+    expect(existingTestFor(repo.root, "src/money.js")).toBe("test/money.test.js");
+  });
+
   it("matches specifiers to the module under test by stem", () => {
     expect(specifierTargetsModule("./refresh.js", "src/auth/refresh.test.ts")).toBe(true);
     expect(specifierTargetsModule("../auth/refresh", "src/auth/refresh.test.ts")).toBe(true);
     expect(specifierTargetsModule("app.auth.refresh", "tests/test_refresh.py")).toBe(true);
     expect(specifierTargetsModule("./client.js", "src/auth/refresh.test.ts")).toBe(false);
+  });
+
+  it("matches a dotted patch target one segment in, and no further", () => {
+    // `module.attribute`, which is what `unittest.mock.patch` takes.
+    expect(specifierTargetsModule("app.service.charge", "tests/test_service.py")).toBe(true);
+    expect(specifierTargetsModule("other.module.thing", "tests/test_service.py")).toBe(false);
+    expect(specifierTargetsModule("app.service.charge", "tests/test_app.py")).toBe(false);
+    // A path segment is a *directory*, not the module: mocking a sibling of
+    // the module under test is ordinary and must stay clean.
+    expect(specifierTargetsModule("../service/charge.js", "src/service.test.ts")).toBe(false);
   });
 
   it("recognises test files from the configured globs", () => {

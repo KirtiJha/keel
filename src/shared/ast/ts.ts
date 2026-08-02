@@ -127,14 +127,57 @@ function normalise(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * The part of a declaration that callers depend on, with the implementation
+ * removed.
+ *
+ * This drives track selection: a changed signature on a widely-called export is
+ * what escalates a change. So including the body here is not a cosmetic bug — it
+ * routed a one-line internal edit to the full track.
+ *
+ * The trap is that "has a body" is not a uniform shape in the TypeScript AST.
+ * `function` and method declarations expose `.body`, but a `VariableDeclaration`
+ * exposes `.initializer` and a `ClassDeclaration` exposes `.members`. Testing
+ * only for `.body` meant `export const f = () => {…}` and `export class C {…}`
+ * fell through to `getText()` — the entire declaration, body included — while
+ * the byte-identical `export function f(…) {…}` was handled correctly. Changing
+ * `Math.round` to `Math.trunc` inside an arrow-const therefore routed to full,
+ * and as a plain function to quick. Python never had this bug, so the two
+ * languages disagreed on the same edit.
+ */
 function signatureOf(ts: typeof TS, node: TS.Node, sf: TS.SourceFile): string {
-  // For anything with a body, the signature is everything before the body.
+  const upTo = (end: number): string => normalise(sf.text.slice(node.getStart(sf), end));
+
+  // Functions, methods, constructors: everything before the body.
   const withBody = node as { body?: TS.Node };
-  if (withBody.body !== undefined) {
-    const start = node.getStart(sf);
-    const end = withBody.body.getStart(sf);
-    return normalise(sf.text.slice(start, end));
+  if (withBody.body !== undefined) return upTo(withBody.body.getStart(sf));
+
+  // `const f = () => {…}` / `const f = function () {…}`: keep the name, the type
+  // annotation and the parameter list; drop the implementation.
+  if (ts.isVariableDeclaration(node)) {
+    const init = node.initializer;
+    if (init !== undefined && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
+      const body = init.body;
+      // An expression-bodied arrow (`= (x) => x * 2`) has no block to strip, and
+      // its body IS its behaviour — but callers depend on the shape, not the
+      // arithmetic, so cut at the same place a block would be cut.
+      return upTo(body.getStart(sf));
+    }
+    // A plain value (`export const MAX = 10`) has no body to separate: the value
+    // is the contract, so the whole declaration is the signature.
+    return normalise(node.getText(sf));
   }
+
+  // A class's contract is its members' signatures, not their implementations.
+  // Recursing per member keeps a body-only edit to one method invisible here.
+  if (ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) {
+    const heritage = upTo(
+      node.members.length > 0 ? node.members[0]!.getStart(sf) : node.getEnd(),
+    );
+    const members = node.members.map((m) => signatureOf(ts, m, sf));
+    return normalise(`${heritage} ${members.join(" ")}`);
+  }
+
   return normalise(node.getText(sf));
 }
 

@@ -1,10 +1,11 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { type Dirent, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { parse as parseYaml } from "yaml";
 
-import type { KeelConfig } from "../shared/config.js";
-import { isDirectory, isFile } from "../shared/paths.js";
+import { DEFAULT_SPEC_DIR, type KeelConfig } from "../shared/config.js";
+import { logWarn } from "../shared/log.js";
+import { escapesRepo, isDirectory, isFile, resolveConfiguredPath } from "../shared/paths.js";
 
 /**
  * Finding OpenSpec change proposals.
@@ -41,33 +42,115 @@ export interface Proposal {
   readonly lineCount: number;
 }
 
+/**
+ * The OpenSpec working tree.
+ *
+ * `spec.dir` is a configured path, so it is contained rather than trusted:
+ * `../../../../openspec` and `/tmp/openspec` both used to resolve straight
+ * through, reading proposals from — and scaffolding changes into — a directory
+ * outside the repository. An escaping value is logged and replaced with the
+ * documented default, so `keel spec` keeps working on the right tree.
+ */
+export function specRoot(root: string, config: KeelConfig): string {
+  const resolved = resolveConfiguredPath(root, config.spec.dir, {
+    key: "spec.dir",
+    fallback: DEFAULT_SPEC_DIR,
+  });
+  if (!resolved.ok) logWarn(resolved.error ?? "spec.dir is not inside the repository");
+  return resolved.path;
+}
+
 export function changesDir(root: string, config: KeelConfig): string {
-  return join(root, config.spec.dir, "changes");
+  return join(specRoot(root, config), "changes");
 }
 
 export function archiveDir(root: string, config: KeelConfig): string {
   return join(changesDir(root, config), "archive");
 }
 
-function markdownFiles(dir: string, out: string[] = []): string[] {
-  let entries: string[];
+/**
+ * Depth cap for the spec tree. OpenSpec's deepest documented layout is
+ * `changes/<id>/specs/<capability>/spec.md` — three levels below the change.
+ * Sixteen leaves room for conventions we have not seen without ever letting the
+ * walk run away.
+ */
+const MAX_SPEC_DEPTH = 16;
+
+/** `dev:ino` for a directory, or null when it cannot be identified. */
+function directoryId(dir: string): string | null {
   try {
-    entries = readdirSync(dir);
+    const s = statSync(dir);
+    return `${s.dev}:${s.ino}`;
   } catch {
-    return out;
+    return null;
+  }
+}
+
+/**
+ * Every markdown file belonging to one change.
+ *
+ * The walk is bounded three ways, because it feeds the `spec.max_lines` cap and
+ * an inflated count either fails an honest change or passes a bloated one. A
+ * self-referential directory symlink used to recurse until the kernel returned
+ * `ELOOP` at ~40 levels, counting a 4-line proposal as 164 lines:
+ *
+ *  - a visited set keyed on `dev:ino`, so a cycle is entered exactly once;
+ *  - a depth cap, which also catches a cycle the inode check cannot see;
+ *  - containment, so a symlink out of the spec tree is not followed at all —
+ *    neither into a directory nor onto a file whose contents would then be read
+ *    back out by `keel spec delta`.
+ */
+function markdownFiles(dir: string, boundary: string): string[] {
+  const out: string[] = [];
+  walkMarkdown(dir, boundary, out, new Set<string>(), 0);
+  return out;
+}
+
+function walkMarkdown(
+  dir: string,
+  boundary: string,
+  out: string[],
+  visited: Set<string>,
+  depth: number,
+): void {
+  if (depth > MAX_SPEC_DEPTH) {
+    logWarn("spec tree deeper than the walk limit; stopping", { depth: MAX_SPEC_DEPTH });
+    return;
   }
 
-  for (const entry of entries.sort()) {
-    const path = join(dir, entry);
+  const id = directoryId(dir);
+  if (id !== null) {
+    if (visited.has(id)) return;
+    visited.add(id);
+  }
+
+  let entries: Dirent[];
+  try {
+    // `withFileTypes` reports the entry itself, so a symlink is visible as one
+    // rather than as whatever it resolves to.
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const path = join(dir, entry.name);
+
+    // A link is followed only if it stays in the spec tree. `escapesRepo`
+    // resolves it, so this covers a chain of links as well as a single one.
+    if (entry.isSymbolicLink() && escapesRepo(boundary, path)) {
+      logWarn("spec tree contains a symlink out of the tree; skipping", { name: entry.name });
+      continue;
+    }
+
     if (isDirectory(path)) {
       // `archive/` is a sibling namespace, never part of another change.
-      if (entry === "archive") continue;
-      markdownFiles(path, out);
-    } else if (entry.toLowerCase().endsWith(".md")) {
+      if (entry.name === "archive") continue;
+      walkMarkdown(path, boundary, out, visited, depth + 1);
+    } else if (entry.name.toLowerCase().endsWith(".md")) {
       out.push(path);
     }
   }
-  return out;
 }
 
 function countLines(paths: readonly string[]): number {
@@ -125,8 +208,8 @@ function readStatus(proposalPath: string): ProposalStatus {
   return "unknown";
 }
 
-function readProposal(root: string, dir: string, archived: boolean): Proposal {
-  const files = markdownFiles(dir);
+function readProposal(root: string, dir: string, archived: boolean, boundary: string): Proposal {
+  const files = markdownFiles(dir, boundary);
   const proposalPath = join(dir, "proposal.md");
   const status = archived ? "archived" : readStatus(proposalPath);
 
@@ -143,7 +226,10 @@ function readProposal(root: string, dir: string, archived: boolean): Proposal {
 
 /** Every change proposal in the repo, archived and not. */
 export function discoverProposals(root: string, config: KeelConfig): Proposal[] {
-  const changes = changesDir(root, config);
+  // The spec tree is the containment boundary for the walk below: a change may
+  // link to a sibling change, but nothing in it may reach outside the tree.
+  const boundary = specRoot(root, config);
+  const changes = join(boundary, "changes");
   if (!isDirectory(changes)) return [];
 
   const out: Proposal[] = [];
@@ -152,15 +238,15 @@ export function discoverProposals(root: string, config: KeelConfig): Proposal[] 
     const path = join(changes, entry);
     if (!isDirectory(path)) continue;
     if (entry === "archive") continue;
-    out.push(readProposal(root, path, false));
+    out.push(readProposal(root, path, false, boundary));
   }
 
-  const archive = archiveDir(root, config);
+  const archive = join(changes, "archive");
   if (isDirectory(archive)) {
     for (const entry of readdirSync(archive).sort()) {
       const path = join(archive, entry);
       if (!isDirectory(path)) continue;
-      out.push(readProposal(root, path, true));
+      out.push(readProposal(root, path, true, boundary));
     }
   }
 

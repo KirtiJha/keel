@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -11,7 +12,13 @@ import {
   checkSpecs,
 } from "../../src/spec/check.js";
 import { DELTA_BEGIN, deltaFor, mergeIntoBody, parseDelta, renderDelta } from "../../src/spec/delta.js";
-import { activeProposals, discoverProposals, proposalForBranch } from "../../src/spec/discover.js";
+import {
+  activeProposals,
+  changesDir,
+  discoverProposals,
+  proposalForBranch,
+  specRoot,
+} from "../../src/spec/discover.js";
 import { earsPattern, isEars } from "../../src/spec/ears.js";
 import { isValidChangeId, scaffoldChange } from "../../src/spec/scaffold.js";
 
@@ -384,6 +391,125 @@ describe("scaffolding", () => {
   it("refuses to overwrite an existing change", () => {
     scaffoldChange(repo.root, repo.config(), "add-webhooks");
     expect(scaffoldChange(repo.root, repo.config(), "add-webhooks").ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Containment
+// ---------------------------------------------------------------------------
+
+describe("spec.dir containment", () => {
+  let outside: string;
+
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), "keel-spec-outside-"));
+  });
+
+  afterEach(() => {
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  function specConfig(dir: string) {
+    const config = repo.config();
+    return { ...config, spec: { ...config.spec, dir } };
+  }
+
+  function outsideProposal(): void {
+    mkdirSync(join(outside, "changes", "outsider"), { recursive: true });
+    writeFileSync(join(outside, "changes", "outsider", "proposal.md"), DRAFT, "utf8");
+  }
+
+  it("ignores an absolute spec.dir outside the repo", () => {
+    proposal("inside", DRAFT);
+    outsideProposal();
+    const found = discoverProposals(repo.root, specConfig(outside));
+    expect(found.map((p) => p.id)).toEqual(["inside"]);
+  });
+
+  it("ignores a `../` walk out of the repo", () => {
+    proposal("inside", DRAFT);
+    outsideProposal();
+    const found = discoverProposals(repo.root, specConfig(relative(repo.root, outside)));
+    expect(found.map((p) => p.id)).toEqual(["inside"]);
+  });
+
+  it("resolves the spec root inside the repo whatever is configured", () => {
+    expect(specRoot(repo.root, specConfig("../../../../tmp/evil"))).toBe(
+      join(repo.root, "openspec"),
+    );
+    expect(changesDir(repo.root, specConfig(outside))).toBe(join(repo.root, "openspec", "changes"));
+  });
+
+  it("scaffolds into the repo rather than the escaping directory", () => {
+    const result = scaffoldChange(repo.root, specConfig(relative(repo.root, outside)), "evil");
+    expect(result.ok).toBe(true);
+    expect(existsSync(join(outside, "changes", "evil"))).toBe(false);
+    expect(existsSync(join(repo.root, "openspec", "changes", "evil", "proposal.md"))).toBe(true);
+  });
+});
+
+describe("symlinks in the spec tree", () => {
+  let outside: string;
+
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), "keel-spec-link-"));
+  });
+
+  afterEach(() => {
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("does not amplify the line count through a symlink loop", () => {
+    // Bounded only by ELOOP at ~40 levels, a self-referential directory turned
+    // a 4-line proposal into 164 lines — enough to trip or dodge the size cap.
+    proposal("loopy", "a\nb\nc\nd");
+    const dir = join(repo.root, "openspec", "changes", "loopy");
+    symlinkSync(dir, join(dir, "self"), "dir");
+
+    const found = discoverProposals(repo.root, repo.config());
+    const loopy = found.find((p) => p.id === "loopy");
+    expect(loopy?.files).toHaveLength(1);
+    expect(loopy?.lineCount).toBe(4);
+  });
+
+  it("terminates on a two-directory symlink cycle", () => {
+    proposal("cyclic", "a\nb");
+    const dir = join(repo.root, "openspec", "changes", "cyclic");
+    mkdirSync(join(dir, "a"), { recursive: true });
+    mkdirSync(join(dir, "b"), { recursive: true });
+    symlinkSync(join(dir, "b"), join(dir, "a", "to-b"), "dir");
+    symlinkSync(join(dir, "a"), join(dir, "b", "to-a"), "dir");
+
+    const found = discoverProposals(repo.root, repo.config());
+    expect(found.find((p) => p.id === "cyclic")?.lineCount).toBe(2);
+  });
+
+  it("does not follow a directory symlink out of the spec tree", () => {
+    proposal("x", "# x");
+    mkdirSync(join(outside, "secrets"), { recursive: true });
+    writeFileSync(join(outside, "secrets", "leak.md"), "1\n2\n3\n4\n5", "utf8");
+    symlinkSync(join(outside, "secrets"), join(repo.root, "openspec/changes/x/linked"), "dir");
+
+    const found = discoverProposals(repo.root, repo.config());
+    expect(found[0]?.files.some((f) => f.includes("leak.md"))).toBe(false);
+  });
+
+  it("does not read a file symlinked out of the spec tree", () => {
+    proposal("y", "# y");
+    writeFileSync(join(outside, "leak.md"), "1\n2\n3\n4\n5", "utf8");
+    symlinkSync(join(outside, "leak.md"), join(repo.root, "openspec/changes/y/leak.md"));
+
+    const found = discoverProposals(repo.root, repo.config());
+    expect(found[0]?.files.some((f) => f.includes("leak.md"))).toBe(false);
+  });
+
+  it("still walks ordinary nested directories", () => {
+    repo.write("openspec/changes/deep/proposal.md", "a");
+    repo.write("openspec/changes/deep/specs/cap/spec.md", "b\nc");
+
+    const found = discoverProposals(repo.root, repo.config());
+    expect(found[0]?.files).toHaveLength(2);
+    expect(found[0]?.lineCount).toBe(3);
   });
 });
 
