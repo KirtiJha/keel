@@ -181,6 +181,9 @@ export function timingSummaries(
       case "route":
         add("router", e.duration_ms);
         break;
+      case "mutation":
+        add("mutation", e.duration_ms);
+        break;
       default:
         break;
     }

@@ -57,6 +57,12 @@ export function asEnumArray<T extends string>(
   return out.length === 0 ? [...fallback] : out;
 }
 
+/** A ratio in [0, 1]. Anything outside the range is a config error, not a clamp. */
+export function asScore(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) return fallback;
+  return value;
+}
+
 /** A plain object, or an empty one. */
 export function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)

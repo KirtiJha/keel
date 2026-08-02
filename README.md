@@ -61,6 +61,9 @@ keel check     # validates config, packs, phase ownership, upstream pins
 keel route     # what track this change is on, and why
 keel doctor    # what is active, how fast it runs, how often gates fire
 keel gotchas   # review gotcha candidates; nothing is written unconfirmed
+keel spec      # full-track spec discipline: size cap, delta, archive gate
+keel mutate    # diff-only mutation testing, gated on score
+keel review    # assemble the review chain's input
 ```
 
 ---
@@ -185,6 +188,61 @@ configuration names (the "looks dead but isn't" case); and anomalous coupling.
 writes. An unreviewed gotcha is worse than none — it is a confident, permanent,
 wrong instruction in the file the model trusts most.
 
+### `src/spec` — full-track spec discipline
+
+OpenSpec owns the design phase; Keel owns the discipline around it. Four rules
+from the plan, three of them mechanical:
+
+1. **Bootstrap brownfield with `/opsx:onboard`** — OpenSpec's command, surfaced
+   by `keel spec onboard` rather than reimplemented.
+2. **Archive at merge, CI-gated.** On the default branch, a proposal marked
+   `applied` that still sits outside `archive/` fails the build. That is what
+   keeps specs current: the update happens at merge, not as a documentation
+   chore nobody does.
+3. **Cap spec size at ~250 lines per change**, counted across every markdown
+   file in it. Over warns, far over fails — the plan says "~250", and failing a
+   build over 251 lines teaches people to game the number rather than write
+   less.
+4. **Attach the delta to the PR.** `keel spec delta` renders the
+   ADDED/MODIFIED/REMOVED sections as a PR comment, updated in place on each
+   push. This is the adoption lever: once reviewers ask for the delta, authors
+   write them without being told.
+
+`keel spec new <id>` scaffolds *structure* — frontmatter, headings, delta
+markers — and no content. Filler prose would be inventing spec content, which
+is OpenSpec's job and the author's.
+
+**EARS acceptance criteria** ship switched off. The plan says "try it on two
+changes before deciding", so `spec.ears: true` turns on a validator that warns
+and never blocks.
+
+### `src/mutation` — mutation testing
+
+Rule of the road 4: **mutation score, never coverage.** Coverage targets produce
+tests that execute code without checking anything; a surviving mutant is direct
+evidence of exactly that. This is also the stated catcher for TDD failure mode 4
+— tautological assertions — which review and assertion lint cannot see.
+
+A mutant is one AST-verified textual edit: a flipped comparison, a swapped
+arithmetic operator, an emptied string, a nulled return. The runner writes it,
+runs the repo's own test command, and restores the file. Tests failing means the
+mutant was **killed**; tests passing means it **survived**.
+
+Three properties it is built around:
+
+- **Diff-only.** Mutants are confined to changed lines. Whole-file mutation on a
+  legacy repo would never finish.
+- **Deterministic.** Same diff, same mutants, same score — selection is sorted
+  and strided, never random. A gate that varies run to run gets switched off.
+- **Restore always.** The original is written back in a `finally` and verified
+  afterwards. Leaving a mutated file behind would be worse than any missed
+  finding.
+
+Floor starts at 50% and ratchets quarterly, off the trend `keel doctor` reports.
+Nothing to mutate — a docs or config change — passes; that is not untested code.
+
+CI only, on pull requests. This is minutes of work, not milliseconds.
+
 ### `src/display` and `src/telemetry` — output
 
 The **MessageDisplay formatter** compresses a message to four rows:
@@ -209,6 +267,12 @@ output, the formatter renders nothing rather than a tidy summary that hides it.
 ever. The serialiser is the privacy control — each event kind is written field by
 field from a fixed allowlist, so an unexpected field has no path to disk. Paths
 are excluded too: not source code, but they leak product names. Asserted by test.
+
+Events cover the plan's measures: track distribution, override rate and
+direction, gate hit rates, TDD gate trips, mutation scores, and **PR comment
+counts** — the headline success metric is "human PR comments down 40%", which
+needs the number recorded somewhere. `keel review record` captures it from CI,
+where the PR API is reachable; counts only, never bodies or authors.
 
 ### `python/keel_gates`
 
@@ -327,6 +391,30 @@ reports their absence as a warning, so the lock is usable now.
 | Component MCP server schema | M7 (UI bridge) | Not started. No speculative client was written. |
 
 ---
+
+## What is not built
+
+Called out plainly rather than left to be discovered.
+
+| Not built | Why |
+|---|---|
+| **UI bridge (M7)** | Blocked on the component MCP server's tool schema. The build spec forbids writing a speculative client against a guessed one, so nothing was written. |
+| **Org standards packs** | Blocked on the PDFs. The pack format, loader and gate runner are complete and three reference packs ship as templates — one per mode. |
+| **A `guide`-mode reference pack** | Guide packs encode org-specific judgment, which is exactly what the PDFs carry. The format is documented in the `keel-standards` skill and covered by tests; inventing an org convention to have an example would be inventing policy. |
+| **Integration TDD (`outer_loop`)** | Deferred by the plan, not by us. The config carries `outer_loop: false` and honours it; turning it on later is one config line plus a standards pack. |
+| **Automatic upstream install** | `keel init` writes the environment and records the pins; it does not run `npm install` or add a plugin marketplace on someone's behalf. |
+| **Skill enable/disable wiring** | `upstream.enabled_skills` is recorded and reported, but not yet written into Claude Code settings — the settings key for toggling individual skills is unconfirmed, and guessing one would silently do nothing. |
+
+## Open questions for the org
+
+`docs/managed-settings.md` carries the M9.4 recommendation: which gates belong
+in **managed settings** (undisableable) versus plugin settings (overridable).
+Nothing is locked down today — everything ships overridable — and three
+questions need answering before that changes:
+
+1. Do you want anything managed in v1? "No, earn it with data" is defensible.
+2. Who owns the exception process, and how fast is it?
+3. Is telemetry opt-in per repo, or on by default?
 
 ## Rules of the road
 

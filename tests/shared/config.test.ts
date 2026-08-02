@@ -74,6 +74,14 @@ describe("strict schema", () => {
     expect(defaultConfig("x", ["typescript"]).tdd.outer_loop).toBe(false);
   });
 
+  it("ships the plan's spec cap and mutation floor", () => {
+    const c = defaultConfig("x", ["typescript"]);
+    expect(c.spec.max_lines).toBe(250);
+    expect(c.mutation.min_score).toBe(0.5);
+    // EARS is optional and untried; the plan says decide after two changes.
+    expect(c.spec.ears).toBe(false);
+  });
+
   it("names the field and the fix for a bad version", () => {
     const result = validateConfig({ ...MINIMAL, version: 2 });
     expect(result.ok).toBe(false);
@@ -232,8 +240,18 @@ describe("cross-check — the fast reader matches the strict schema", () => {
         telemetry: { sink: "none", path: "tmp/tel" },
         upstream: { enabled_skills: ["a"], disabled_skills: ["b"] },
         display: { enabled: false, budget_ms: 50 },
+        spec: { dir: "specs", max_lines: 120, ears: true, require_proposal_on_full: false },
+        mutation: {
+          enabled: false,
+          min_score: 0.75,
+          max_mutants: 10,
+          timeout_ms: 30_000,
+          test_command: "make test",
+        },
       },
     ],
+    ["spec only", { ...MINIMAL, spec: { max_lines: 100 } }],
+    ["mutation only", { ...MINIMAL, mutation: { min_score: 0.8 } }],
     ["empty disabled list", { ...MINIMAL, standards: { disabled: [] } }],
     ["empty force_full_globs", { ...MINIMAL, router: { force_full_globs: [] } }],
   ];
@@ -270,7 +288,19 @@ describe("JSON Schema generation", () => {
     const schema = toJsonSchema();
     expect(schema["type"]).toBe("object");
     expect(Object.keys(schema["properties"] as Record<string, unknown>).sort()).toEqual(
-      ["display", "repo", "router", "standards", "tdd", "telemetry", "tracks", "upstream", "version"].sort(),
+      [
+        "display",
+        "mutation",
+        "repo",
+        "router",
+        "spec",
+        "standards",
+        "tdd",
+        "telemetry",
+        "tracks",
+        "upstream",
+        "version",
+      ].sort(),
     );
   });
 

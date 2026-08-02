@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 
 import { configPath, isFile } from "./paths.js";
-import { asBool, asEnum, asEnumArray, asInt, asString, asStringArray, at } from "./validate.js";
+import { asBool, asEnum, asEnumArray, asInt, asScore, asString, asStringArray, at } from "./validate.js";
 
 /**
  * Config types, canonical defaults, and the **runtime** reader.
@@ -67,6 +67,27 @@ export interface KeelConfig {
     readonly enabled: boolean;
     readonly budget_ms: number;
   };
+  readonly spec: {
+    /** Root of the OpenSpec working tree. */
+    readonly dir: string;
+    /** Plan rule 3: verbose specs are a defect. */
+    readonly max_lines: number;
+    /** Optional EARS acceptance criteria, full track only. Off until tried. */
+    readonly ears: boolean;
+    /** Full-track changes must have a proposal before implementation. */
+    readonly require_proposal_on_full: boolean;
+  };
+  readonly mutation: {
+    readonly enabled: boolean;
+    /** Floor for killed/total on changed lines. Ratchets quarterly. */
+    readonly min_score: number;
+    /** Cap per run: mutation is slow and CI is not free. */
+    readonly max_mutants: number;
+    /** Per-mutant test timeout. */
+    readonly timeout_ms: number;
+    /** Test command. Detected from the repo when empty. */
+    readonly test_command: string;
+  };
 }
 
 /** Canonical defaults. The Zod schema's `.default()` values mirror these. */
@@ -87,6 +108,13 @@ export const DEFAULT_PACKAGE_ROOTS: readonly string[] = ["packages/*", "services
 export const DEFAULT_PACK_DIRS: readonly string[] = ["standards"];
 export const DEFAULT_PACKS_REF = "keel-standards@0.1.0";
 export const DEFAULT_TELEMETRY_PATH = ".keel/telemetry";
+export const DEFAULT_SPEC_DIR = "openspec";
+/** Plan: "Cap spec size at ~250 lines per change." */
+export const DEFAULT_SPEC_MAX_LINES = 250;
+/** Plan: "Starting floor ~50%, ratcheting quarterly." */
+export const DEFAULT_MUTATION_MIN_SCORE = 0.5;
+export const DEFAULT_MUTATION_MAX_MUTANTS = 40;
+export const DEFAULT_MUTATION_TIMEOUT_MS = 120_000;
 
 /** Superpowers skills enabled by default (build spec M2.4). */
 export const DEFAULT_ENABLED_SKILLS: readonly string[] = [
@@ -132,6 +160,19 @@ export function defaultConfig(
     telemetry: { sink: "file", path: DEFAULT_TELEMETRY_PATH },
     upstream: { enabled_skills: [...DEFAULT_ENABLED_SKILLS], disabled_skills: [] },
     display: { enabled: true, budget_ms: 100 },
+    spec: {
+      dir: DEFAULT_SPEC_DIR,
+      max_lines: DEFAULT_SPEC_MAX_LINES,
+      ears: false,
+      require_proposal_on_full: true,
+    },
+    mutation: {
+      enabled: true,
+      min_score: DEFAULT_MUTATION_MIN_SCORE,
+      max_mutants: DEFAULT_MUTATION_MAX_MUTANTS,
+      timeout_ms: DEFAULT_MUTATION_TIMEOUT_MS,
+      test_command: "",
+    },
   };
 }
 
@@ -198,6 +239,22 @@ export function readConfigValue(raw: unknown, repoName = "unknown"): KeelConfig 
     display: {
       enabled: asBool(at(raw, "display", "enabled"), base.display.enabled),
       budget_ms: Math.min(5000, Math.max(10, asInt(at(raw, "display", "budget_ms"), base.display.budget_ms, 10))),
+    },
+    spec: {
+      dir: asString(at(raw, "spec", "dir"), base.spec.dir),
+      max_lines: asInt(at(raw, "spec", "max_lines"), base.spec.max_lines, 1),
+      ears: asBool(at(raw, "spec", "ears"), base.spec.ears),
+      require_proposal_on_full: asBool(
+        at(raw, "spec", "require_proposal_on_full"),
+        base.spec.require_proposal_on_full,
+      ),
+    },
+    mutation: {
+      enabled: asBool(at(raw, "mutation", "enabled"), base.mutation.enabled),
+      min_score: asScore(at(raw, "mutation", "min_score"), base.mutation.min_score),
+      max_mutants: asInt(at(raw, "mutation", "max_mutants"), base.mutation.max_mutants, 1),
+      timeout_ms: asInt(at(raw, "mutation", "timeout_ms"), base.mutation.timeout_ms, 1000),
+      test_command: asString(at(raw, "mutation", "test_command"), base.mutation.test_command),
     },
   };
 }

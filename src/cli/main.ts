@@ -10,7 +10,10 @@ import { check } from "./commands/check.js";
 import { doctor } from "./commands/doctor.js";
 import { gotchas } from "./commands/gotchas.js";
 import { init } from "./commands/init.js";
+import { mutate } from "./commands/mutate.js";
+import { recordReview, review } from "./commands/review.js";
 import { route } from "./commands/route.js";
+import { spec } from "./commands/spec.js";
 import { telemetry } from "./commands/telemetry.js";
 import { bold, dim, fail, line } from "./output.js";
 
@@ -25,6 +28,10 @@ ${bold("Commands")}
   check                validate config, packs, phase ownership and pins
   doctor               what is active, and how fast it runs
   route                classify the current change and pick a track
+  spec [check|delta|new|onboard|list]
+                       full-track spec discipline: size cap, delta, archive gate
+  mutate               diff-only mutation testing, gated on score
+  review [record]      assemble the review chain's input
   gotchas              review and confirm gotcha candidates
   telemetry [show|ship|clear]
   version              print the plugin version
@@ -36,6 +43,11 @@ ${bold("Options")}
   --list               list only, do not prompt (gotchas)
   --force              overwrite instead of keeping (init)
   --to <path>          destination directory (telemetry ship)
+  --change <id>        which change to act on (spec delta)
+  --out <path>         write output to a file instead of stdout (spec delta)
+  --default-branch     treat this run as the default branch (spec check, CI)
+  --report             report without failing (mutate)
+  --prompt             emit only the assembled prompt (review)
 
 ${dim("Docs: README.md")}
 `;
@@ -73,6 +85,64 @@ async function main(): Promise<number> {
         against: flagString(args, "against"),
         override: parseTrack(requested),
         json: flagBool(args, "json"),
+      });
+    }
+
+    case "spec": {
+      const requested = flagString(args, "track");
+      if (requested !== null && parseTrack(requested) === null) {
+        fail(`unknown track \`${requested}\` — expected quick, standard or full`);
+        return 1;
+      }
+      return spec({
+        repoRoot,
+        subcommand: args.subcommand,
+        changeId: flagString(args, "change") ?? args.positional[1] ?? null,
+        onDefaultBranch: flagBool(args, "default-branch"),
+        track: parseTrack(requested),
+        outPath: flagString(args, "out"),
+        json: flagBool(args, "json"),
+      });
+    }
+
+    case "mutate":
+      return mutate({
+        repoRoot,
+        pluginRoot: plugin,
+        against: flagString(args, "against"),
+        json: flagBool(args, "json"),
+        report: flagBool(args, "report"),
+      });
+
+    case "review": {
+      const requested = flagString(args, "track");
+      if (requested !== null && parseTrack(requested) === null) {
+        fail(`unknown track \`${requested}\` — expected quick, standard or full`);
+        return 1;
+      }
+
+      if (args.subcommand === "record") {
+        const track = parseTrack(requested);
+        if (track === null) {
+          fail("`keel review record` needs --track quick|standard|full");
+          return 1;
+        }
+        return recordReview({
+          repoRoot,
+          humanComments: Number.parseInt(flagString(args, "human-comments") ?? "0", 10) || 0,
+          botComments: Number.parseInt(flagString(args, "bot-comments") ?? "0", 10) || 0,
+          reviewCount: Number.parseInt(flagString(args, "reviews") ?? "0", 10) || 0,
+          changedFiles: Number.parseInt(flagString(args, "changed-files") ?? "0", 10) || 0,
+          track,
+        });
+      }
+
+      return review({
+        repoRoot,
+        pluginRoot: plugin,
+        against: flagString(args, "against"),
+        track: parseTrack(requested),
+        promptOnly: flagBool(args, "prompt"),
       });
     }
 

@@ -43,6 +43,23 @@ dependencies:
       Latest on npm, MIT. Requires node >=20.19.0, which is why this repo's
       `engines.node` is >=20.19.0 rather than >=20. Full track only.
 
+  superspec:
+    version: "0.1.11"
+    source: "@sbswang2002/superspec"
+    role: pattern-source
+    owns: []
+    note: >-
+      NOT INSTALLED. The plan takes one thing from Superspec: "the wiring
+      between those two — OpenSpec plans, Superpowers builds". That wiring is
+      implemented as Keel's own phase-ownership map in src/upstream/phases.ts,
+      enforced by `keel check`. Installing a third workflow tool on top of it
+      would put a second owner on planning.
+      IDENTIFICATION IS UNCONFIRMED: npm carries about ten packages named
+      superspec. This one is pinned because its description ("OpenSpec +
+      Superpowers workflow bootstrapper for Claude Code") matches the plan's
+      wording exactly. It installs nothing, so a wrong pin costs nothing but a
+      wrong citation — correct it if a different project was meant.
+
   spec-kit:
     version: "0.15.1"
     source: "github/spec-kit"

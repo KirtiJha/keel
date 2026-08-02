@@ -228,3 +228,90 @@ dependencies claiming one phase now fails `keel check` and names both.
 **Still outstanding:** internal mirrors for the two installed dependencies.
 Reported as a warning rather than an error, because the lock is usable without
 them and blocking on a mirror nobody has set up yet would help no one.
+
+
+---
+
+## 10. Mutation testing is ours, not Stryker's
+
+**Plan:** week 8 — "Assertion lint + mutation testing in CI, diff-only", gating
+on mutation score with a ~50% floor.
+
+**Considered:** StrykerJS, the standard JS mutation runner.
+
+**Decided:** build it. Three reasons, in order of weight:
+
+1. **Both languages.** Stryker is JS-only. A Python-side mutation story would
+   have to be a second tool with a second config, a second score and a second
+   way to be wrong.
+2. **Diff-only is the hard requirement.** Stryker's incremental mode re-runs
+   what changed; the plan wants mutants *confined to changed lines*, which is a
+   different thing and the reason this is survivable on a legacy repo at all.
+3. **The AST layer already exists.** Generating mutants is one more consumer of
+   the TypeScript compiler wrapper and `keel_gates`, which are already built,
+   already lazy-loaded and already tested.
+
+The runner is deliberately dumb: apply one edit, run the repo's own test
+command, restore. No test-impact analysis, no parallel workers, no incremental
+cache. Those are the features that make a mutation tool fast *and* make its
+score hard to trust; the cap on mutants per run buys the same wall-clock saving
+with none of the ambiguity.
+
+**Determinism was designed in, not discovered.** Selection sorts by position and
+strides, so the same diff always produces the same mutants and the same score.
+A gate whose result moves between runs on identical code is a gate people learn
+to re-run until it passes.
+
+---
+
+## 11. Spec Kit and Superspec are pinned but not installed
+
+Both contribute *patterns*, not tooling, and installing either would put a
+second owner on a phase the plan has already assigned:
+
+| Upstream | Plan says it contributes | Would claim |
+|---|---|---|
+| Spec Kit | the constitution concept, and the preset pattern copied for standards packs | design, planning |
+| Superspec | "the wiring between those two — OpenSpec plans, Superpowers builds" | planning |
+
+Superspec's contribution is already implemented: it *is* Keel's phase-ownership
+map, enforced by `keel check`. Recording both as `role: pattern-source` keeps
+the provenance without creating a conflict.
+
+**One honest caveat:** npm carries roughly ten packages named some variant of
+"superspec". The pinned one matches the plan's wording exactly in its
+description, but the identification is unconfirmed and says so in the lock file.
+It installs nothing, so a wrong pin costs a wrong citation and nothing else.
+
+---
+
+## 12. The full-track proposal requirement is not a per-edit hook
+
+**Plan:** full track means proposal → plan → build → verify → archive.
+
+**Tempting:** block edits at `PostToolUse` when a full-track change has no
+proposal.
+
+**Rejected.** Deciding the track needs the router, and the router counts callers
+with `git grep`. Running that on every Write would cost more than every other
+gate put together, and rule of the road 1 — the quick track must be invisible —
+outranks catching a missing proposal a few minutes earlier.
+
+**Instead:** `keel spec check --track full` and CI enforce it, and `keel route`
+prints the full-track process when it routes there. The gate still exists; it
+just runs where a human is already waiting.
+
+---
+
+## 13. Where the plan and this build differ
+
+Everything the plan asks for is built except the two items excluded by the
+maintainer (UI bridge, PDF migration) and one deferred by the plan itself.
+
+| Plan item | State |
+|---|---|
+| Integration TDD (`outer_loop`) | Deferred **by the plan**, not by us. Config carries and honours `outer_loop: false`. |
+| `guide`-mode reference pack | None ships. A guide encodes org-specific judgment — the PDFs' content. Format is documented and tested; inventing one would be inventing policy. |
+| Pilot repos, named owner, per-team champion | Organisational, not code. |
+| Managed Code Review configuration | The recommendation is written (README, "managed vs plugin settings"); the decision is the org's, as M9.4 requires. |
+| Skill enable/disable wiring | Recorded in config and reported by `keel check`, not written into Claude Code settings — the key for toggling individual skills is unconfirmed, and a guessed key would silently do nothing. |

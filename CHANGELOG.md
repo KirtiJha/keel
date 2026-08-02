@@ -7,6 +7,32 @@ semver.
 
 ## [Unreleased]
 
+### Added
+
+- **Mutation testing** (`keel mutate`). Diff-only, deterministic, gated on
+  score with a 50% starting floor that ratchets. AST-driven operators for both
+  languages; the runner drives the repo's own test command and always restores
+  the file. Completes plan week 8 and rule of the road 4. A test asserts it
+  catches the tautological-test failure mode that assertion lint cannot see.
+- **Full-track spec discipline** (`keel spec`). The plan's four rules: archive
+  at merge (CI-gated on the default branch), the ~250-line cap, delta rendering
+  for PR comments, and a full-track proposal requirement. `keel spec new`
+  scaffolds structure and no content; `keel spec onboard` hands over to
+  OpenSpec's `/opsx:onboard` rather than reimplementing it.
+- **EARS acceptance criteria**, off by default. The plan says try it on two
+  changes before deciding, so `spec.ears: true` warns and never blocks.
+- **Review chain** (`keel review`). Assembles rubric-filtered review input plus
+  the spec delta, and documents the chain order. `--prompt` emits it for piping.
+- **PR comment telemetry** (`keel review record`). Counts only — the plan's
+  headline metric is "human PR comments down 40%", which needs recording.
+- **`migration-safety` reference pack**, `mode: review`. Third reference pack,
+  completing one template per mode.
+- **Superspec pinned as a pattern source.** Its contribution — "the wiring
+  between those two: OpenSpec plans, Superpowers builds" — is Keel's own phase
+  map. Recorded for provenance; identification is unconfirmed and flagged in
+  the lock file.
+- CI jobs for the mutation gate, the spec-discipline gate and delta attachment.
+
 ### Changed
 
 - **Upstream is pinned.** Superpowers `6.2.0` (planning, implementation) and
@@ -130,3 +156,6 @@ Full rationale in `docs/decisions.md`.
   bounded by a 2-second per-rule timeout in the runner.
 - Redaction missed secret values in structured data whose key — not value —
   marked them secret.
+- Gate 1 named tests with a non-literal title by line number, so any edit above
+  one made it look deleted. Named by ordinal instead. Found by the M6
+  zero-false-positive test after the config corpus grew.

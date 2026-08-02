@@ -94,6 +94,67 @@ jobs:
       - name: Test
         run: pytest -q
 
+  mutation:
+    name: Mutation score
+    runs-on: ubuntu-latest
+    # PRs only: the gate is diff-only, so there is nothing to measure on a push
+    # to the default branch where the diff is already merged.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Rule of the road 4: mutation score, never coverage. Confined to the
+      # lines this PR touched, so a legacy file is never a cleanup project.
+      - name: keel mutate
+        run: node scripts/cli.mjs mutate --against origin/${{ github.base_ref }}
+
+  spec-discipline:
+    name: Spec discipline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      # Plan rules 2 and 3: archive at merge, and the ~250-line cap. The archive
+      # gate only fires on the default branch, which is where an unarchived
+      # proposal means the delta never folded into the capability spec.
+      - name: keel spec check
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            node scripts/cli.mjs spec check --default-branch
+          else
+            node scripts/cli.mjs spec check
+          fi
+
+      # Plan rule 4: attach the delta to the PR. Best-effort — a change with no
+      # proposal is not an error, it is most changes.
+      - name: Attach the spec delta to the PR
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if node scripts/cli.mjs spec delta --out /tmp/delta.md 2>/dev/null; then
+            gh pr comment "${{ github.event.pull_request.number }}" \
+              --body-file /tmp/delta.md --edit-last --create-if-none
+          else
+            echo "no proposal for this branch — nothing to attach"
+          fi
+
   self-check:
     name: keel check (dogfood)
     runs-on: ubuntu-latest

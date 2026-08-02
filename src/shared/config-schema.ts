@@ -9,6 +9,11 @@ import {
   DEFAULT_PACKAGE_ROOTS,
   DEFAULT_PACKS_REF,
   DEFAULT_PACK_DIRS,
+  DEFAULT_MUTATION_MAX_MUTANTS,
+  DEFAULT_MUTATION_MIN_SCORE,
+  DEFAULT_MUTATION_TIMEOUT_MS,
+  DEFAULT_SPEC_DIR,
+  DEFAULT_SPEC_MAX_LINES,
   DEFAULT_TELEMETRY_PATH,
   DEFAULT_TEST_GLOBS,
   EFFORTS,
@@ -111,6 +116,36 @@ export const KeelConfigSchema = z
         budget_ms: z.number().int().min(10).max(5000).default(100),
       })
       .default({ enabled: true, budget_ms: 100 }),
+
+    spec: z
+      .object({
+        dir: z.string().min(1).default(DEFAULT_SPEC_DIR),
+        max_lines: z.number().int().min(1).default(DEFAULT_SPEC_MAX_LINES),
+        ears: z.boolean().default(false),
+        require_proposal_on_full: z.boolean().default(true),
+      })
+      .default({
+        dir: DEFAULT_SPEC_DIR,
+        max_lines: DEFAULT_SPEC_MAX_LINES,
+        ears: false,
+        require_proposal_on_full: true,
+      }),
+
+    mutation: z
+      .object({
+        enabled: z.boolean().default(true),
+        min_score: z.number().min(0).max(1).default(DEFAULT_MUTATION_MIN_SCORE),
+        max_mutants: z.number().int().min(1).default(DEFAULT_MUTATION_MAX_MUTANTS),
+        timeout_ms: z.number().int().min(1000).default(DEFAULT_MUTATION_TIMEOUT_MS),
+        test_command: z.string().default(""),
+      })
+      .default({
+        enabled: true,
+        min_score: DEFAULT_MUTATION_MIN_SCORE,
+        max_mutants: DEFAULT_MUTATION_MAX_MUTANTS,
+        timeout_ms: DEFAULT_MUTATION_TIMEOUT_MS,
+        test_command: "",
+      }),
   })
   .strict();
 
@@ -149,6 +184,11 @@ const FIELD_HELP: Readonly<Record<string, string>> = {
   "telemetry.sink": "`file` (local spool) or `none`",
   "telemetry.path": "a repo-relative directory, e.g. `.keel/telemetry`",
   "display.budget_ms": "milliseconds, 10–5000 — formatting past this is dropped",
+  "spec.dir": "the OpenSpec working directory, e.g. `openspec`",
+  "spec.max_lines": "a positive integer — the per-change spec cap, e.g. 250",
+  "mutation.min_score": "a ratio between 0 and 1, e.g. 0.5 for a 50% floor",
+  "mutation.max_mutants": "a positive integer — mutants per run, e.g. 40",
+  "mutation.timeout_ms": "milliseconds per mutant, at least 1000",
 };
 
 function fixFor(path: string, issue: z.core.$ZodIssue): string {

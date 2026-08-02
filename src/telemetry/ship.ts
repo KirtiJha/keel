@@ -126,6 +126,70 @@ export function tddStats(events: readonly TelemetryEvent[]): TddStats[] {
     .sort((a, b) => b.trips - a.trips || a.gate.localeCompare(b.gate));
 }
 
+export interface MutationTrend {
+  readonly runs: number;
+  /** Mean score across runs, for deciding when to ratchet the floor. */
+  readonly meanScore: number;
+  readonly lastScore: number;
+  readonly failures: number;
+}
+
+/** Mutation scores over time. The floor ratchets quarterly off this. */
+export function mutationTrend(events: readonly TelemetryEvent[]): MutationTrend {
+  const scores: number[] = [];
+  let failures = 0;
+  for (const e of events) {
+    if (e.kind !== "mutation") continue;
+    if (e.total === 0) continue;
+    scores.push(e.score);
+    if (!e.passed) failures++;
+  }
+  const runs = scores.length;
+  return {
+    runs,
+    meanScore: runs === 0 ? 0 : scores.reduce((a, b) => a + b, 0) / runs,
+    lastScore: scores[runs - 1] ?? 0,
+    failures,
+  };
+}
+
+export interface ReviewTrend {
+  readonly prs: number;
+  /** The plan's headline metric: human PR comments down 40%. */
+  readonly meanHumanComments: number;
+  readonly totalHumanComments: number;
+  readonly byTrack: Readonly<Record<string, number>>;
+}
+
+/** Human PR comment counts, the plan's primary success measure. */
+export function reviewTrend(events: readonly TelemetryEvent[]): ReviewTrend {
+  const perTrack = new Map<string, { prs: number; comments: number }>();
+  let prs = 0;
+  let totalHumanComments = 0;
+
+  for (const e of events) {
+    if (e.kind !== "pr_review") continue;
+    prs++;
+    totalHumanComments += e.human_comments;
+    const entry = perTrack.get(e.track) ?? { prs: 0, comments: 0 };
+    entry.prs++;
+    entry.comments += e.human_comments;
+    perTrack.set(e.track, entry);
+  }
+
+  const byTrack: Record<string, number> = {};
+  for (const [track, { prs: n, comments }] of perTrack) {
+    byTrack[track] = n === 0 ? 0 : comments / n;
+  }
+
+  return {
+    prs,
+    meanHumanComments: prs === 0 ? 0 : totalHumanComments / prs,
+    totalHumanComments,
+    byTrack,
+  };
+}
+
 /** Override rate and direction. The plan watches downward overrides. */
 export function overrideStats(events: readonly TelemetryEvent[]): {
   readonly total: number;

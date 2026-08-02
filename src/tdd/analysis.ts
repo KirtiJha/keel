@@ -111,6 +111,15 @@ export async function analyseTypeScriptTests(
   const { ts, sourceFile } = parsed;
   const ranges: TestRange[] = [];
   const mockedModules: string[] = [];
+  /**
+   * Ordinal for declarations whose title is not a string literal — a template
+   * with substitutions, say, whose runtime name we cannot know.
+   *
+   * Numbered by position among unnamed declarations rather than by line: a
+   * line-based name shifts whenever anything above it is edited, and gate 1
+   * then reads the shift as a deleted test. That fired on this repo's own suite.
+   */
+  let unnamedOrdinal = 0;
   const allMatchers: string[] = [];
   const looseAssertions: Array<{ pos: number }> = [];
 
@@ -149,9 +158,10 @@ export async function analyseTypeScriptTests(
         const declarationText = isCurriedDeclaration && curried !== null ? curried : calleeText;
         const declarationModifier = isCurriedDeclaration ? curriedModifier : modifier;
         const titleNode = node.arguments[0];
-        const name = titleNode !== undefined && ts.isStringLiteralLike(titleNode)
-          ? titleNode.text
-          : `${declarationText}@${parsed.lineOf(node.getStart(sourceFile))}`;
+        const name =
+          titleNode !== undefined && ts.isStringLiteralLike(titleNode)
+            ? titleNode.text
+            : `${declarationText}#${unnamedOrdinal++}`;
 
         ranges.push({
           name,

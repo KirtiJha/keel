@@ -1,0 +1,11 @@
+name: migration-safety
+mode: review
+applies_to:
+  - "**/migrations/**"
+  - "**/migrate/**"
+  - "**/alembic/versions/*.py"
+  - "**/*.sql"
+languages: [typescript, python]
+owner: platform-team
+severity: high
+description: "Migrations are reversible, backfill-safe, and deployable ahead of the code that needs them."

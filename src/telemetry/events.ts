@@ -66,6 +66,31 @@ export type TelemetryEventInput =
     }
   | { readonly kind: "spike"; readonly enabled: boolean }
   | {
+      readonly kind: "mutation";
+      /** killed / (killed + survived), rounded to 3 places. */
+      readonly score: number;
+      readonly killed: number;
+      readonly survived: number;
+      readonly total: number;
+      readonly passed: boolean;
+      readonly duration_ms: number;
+    }
+  | {
+      /**
+       * PR review outcome. Plan success metric: "human PR comments down 40%",
+       * which needs the count to be recorded somewhere.
+       *
+       * Counts only. No comment bodies, no author names, no PR titles — the
+       * same rule as everything else here.
+       */
+      readonly kind: "pr_review";
+      readonly human_comments: number;
+      readonly bot_comments: number;
+      readonly review_count: number;
+      readonly changed_files: number;
+      readonly track: Track;
+    }
+  | {
       readonly kind: "hook_timing";
       readonly hook: string;
       readonly duration_ms: number;
@@ -155,6 +180,31 @@ export function serialiseEvent(
 
     case "spike":
       return { ...base, kind: "spike", enabled: bool(e["enabled"]) };
+
+    case "mutation":
+      return {
+        ...base,
+        kind: "mutation",
+        score: num(e["score"]),
+        killed: num(e["killed"]),
+        survived: num(e["survived"]),
+        total: num(e["total"]),
+        passed: bool(e["passed"]),
+        duration_ms: num(e["duration_ms"]),
+      };
+
+    case "pr_review": {
+      if (!isTrack(e["track"])) return null;
+      return {
+        ...base,
+        kind: "pr_review",
+        human_comments: num(e["human_comments"]),
+        bot_comments: num(e["bot_comments"]),
+        review_count: num(e["review_count"]),
+        changed_files: num(e["changed_files"]),
+        track: e["track"],
+      };
+    }
 
     case "hook_timing":
       return {
