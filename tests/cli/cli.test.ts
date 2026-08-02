@@ -1196,10 +1196,16 @@ describe("the reviewer subagent is registered exactly once", () => {
     expect(existsSync(join(PLUGIN_ROOT, "agents", "keel-reviewer.md"))).toBe(false);
   });
 
-  it("keeps the template out of every auto-scanned path", () => {
-    expect(existsSync(join(PLUGIN_ROOT, "src", "cli", "templates", "agents", "keel-reviewer.md"))).toBe(
-      true,
-    );
+  it("keeps exactly one template, outside every auto-scanned path", () => {
+    // `installAgents` reads `templates/agents/` first and falls back to
+    // `src/cli/templates/agents/`, so the file may live in either without a
+    // code change. What must never be true is that it lives in neither, or in
+    // the plugin-root `agents/` directory Claude Code scans by itself.
+    const homes = [
+      join(PLUGIN_ROOT, "templates", "agents", "keel-reviewer.md"),
+      join(PLUGIN_ROOT, "src", "cli", "templates", "agents", "keel-reviewer.md"),
+    ];
+    expect(homes.filter(existsSync)).toHaveLength(1);
   });
 
   it("leaves a hand-edited copy alone", () => {
@@ -1208,5 +1214,29 @@ describe("the reviewer subagent is registered exactly once", () => {
     repo.write(".claude/agents/keel-reviewer.md", `${readFileSync(installed, "utf8")}\n## Mine\n`);
     keel(["init"], repo.root);
     expect(readFileSync(installed, "utf8")).toContain("## Mine");
+  });
+});
+
+describe("doctor's budget breaches", () => {
+  it("explains the `!`, and names cold cache before blaming a regression", () => {
+    keel(["init"], repo.root);
+    repo.write(
+      ".keel/telemetry/events-2026-08-02.jsonl",
+      `${JSON.stringify({
+        ts: "2026-08-02T18:34:49.533Z",
+        version: "0.1.0",
+        repo_id: "x",
+        session: "s",
+        kind: "hook_timing",
+        hook: "post-tool-use",
+        duration_ms: 1400,
+        loaded_ast: true,
+      })}\n`,
+    );
+
+    const run = keel(["doctor"], repo.root);
+    expect(run.stdout).toContain("! marks p95 over budget");
+    expect(run.stdout).toContain("cold");
+    expect(run.stdout).toContain("fix if it persists warm");
   });
 });

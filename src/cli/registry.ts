@@ -245,8 +245,8 @@ export function commandSpec(name: string): CommandSpec | null {
  * Every flag name that takes a value, across all commands.
  *
  * The parser needs this before it knows which command is running, which is why
- * a name must mean the same thing everywhere. `assertFlagKindsAgree` in the
- * tests holds that invariant.
+ * a name must mean the same thing everywhere. `tests/cli/args.test.ts` holds
+ * that invariant ("gives every flag the same kind wherever it appears").
  */
 export function valueFlagNames(): Set<string> {
   const out = new Set<string>();

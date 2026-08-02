@@ -248,7 +248,9 @@ export function doctor(repoRoot: string, pluginRoot: string, options: DoctorOpti
   if (timings.length === 0) {
     info("no telemetry recorded yet");
   } else {
-    line(`  ${dim("name".padEnd(28))}${dim("n".padEnd(6))}${dim("p50".padEnd(9))}${dim("p95".padEnd(9))}${dim("budget")}`);
+    // 12 wide, not 9: "1400.0ms !" is ten characters, and the `!` used to run
+    // straight into the budget column exactly when it mattered most.
+    line(`  ${dim("name".padEnd(28))}${dim("n".padEnd(6))}${dim("p50".padEnd(12))}${dim("p95".padEnd(12))}${dim("budget")}`);
     let anyOver = false;
     for (const timing of timings) {
       const budget = budgetFor(timing.name);
@@ -257,7 +259,7 @@ export function doctor(repoRoot: string, pluginRoot: string, options: DoctorOpti
       const p95 = `${timing.p95.toFixed(1)}ms`;
       line(
         `  ${timing.name.padEnd(28)}${String(timing.count).padEnd(6)}` +
-          `${`${timing.p50.toFixed(1)}ms`.padEnd(9)}${(over ? `${p95} !` : p95).padEnd(9)}${budget}ms`,
+          `${`${timing.p50.toFixed(1)}ms`.padEnd(12)}${(over ? `${p95} !` : p95).padEnd(12)}${budget}ms`,
       );
     }
     // The `!` used to appear with no legend and no fix, on a first run whose
@@ -265,7 +267,7 @@ export function doctor(repoRoot: string, pluginRoot: string, options: DoctorOpti
     if (anyOver) {
       detail("! marks p95 over budget");
       detail(
-        "the first run in a session pays module init and an empty symbol cache; warm runs are typically 2-4x faster, so re-run before treating this as a regression",
+        "cold vs warm: the first run in a session pays module init and an empty symbol cache, and a cold number is often 2-4x a warm one — re-run before treating this as a regression",
       );
       detail("fix if it persists warm: `KEEL_DEBUG=1` to log per-stage timings, then narrow the pack or gate that dominates");
     }
