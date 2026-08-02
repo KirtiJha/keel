@@ -1,14 +1,16 @@
 import { loadConfigOrDefaults } from "../../shared/config.js";
 import { readSpool, trackDistribution } from "../../telemetry/spool.js";
 import { archiveSpool, gateStats, shipToFile, tddStats } from "../../telemetry/ship.js";
-import { fail, heading, info, line, ok, rows, warn } from "../output.js";
+import { fail, heading, info, line, ok, rows } from "../output.js";
 
 /**
  * `keel telemetry <show|ship|clear>`.
  *
- * `ship` writes a local bundle only. The real destination is a blocked input
- * (build spec §1) — rather than guess an endpoint, this reports what it wrote
- * and states plainly what is still needed.
+ * `ship` rolls the spool up into a local bundle, and that is the whole of it.
+ * Local-only is the decision (docs/decisions.md §16), not a stage on the way to
+ * a remote sink: the data exists to answer "which gates actually fire", and a
+ * person reading `keel telemetry show` in their own repo answers that without
+ * anyone's telemetry leaving their machine.
  */
 export function telemetry(
   repoRoot: string,
@@ -70,8 +72,7 @@ export function telemetry(
       }
 
       ok(`wrote ${result.value.events} events to ${result.value.bundlePath}`);
-      warn("no remote sink is configured — this bundle is local only");
-      info("blocked input: the telemetry destination is still needed (build spec §1)");
+      info("local only, by design — nothing is sent anywhere");
       line();
       return 0;
     }

@@ -15,10 +15,11 @@ import type { TelemetryEvent } from "./events.js";
  * network calls inside hooks, so recording and shipping are different things
  * that happen at different times.
  *
- * Only the `file` sink is implemented. The real destination is a blocked input
- * (build spec §1): rather than guess an endpoint and write a speculative
- * client, `ship` writes a rolled-up bundle to a local path and reports that the
- * destination is still needed.
+ * The `file` sink is the only sink, and that is the decision rather than a gap
+ * (docs/decisions.md §16). Telemetry is collected by default so gate hit rates
+ * can be measured honestly — opt-in would sample only the teams who already
+ * like Keel — and it never leaves the machine that produced it. `ship` rolls
+ * the spool into a bundle on local disk; there is nowhere else for it to go.
  */
 
 export interface ShipSummary {

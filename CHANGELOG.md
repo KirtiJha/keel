@@ -7,6 +7,16 @@ semver.
 
 ## [Unreleased]
 
+### Decided
+
+- **No managed settings in v1.** Every gate ships overridable, including the two
+  `docs/managed-settings.md` recommends locking. Answers M9.4's first question;
+  see `docs/decisions.md` §16.
+- **Telemetry is on by default and local-only.** No remote sink exists or is
+  planned, which retires the "telemetry destination" blocked input — the
+  destination is the local file. `keel telemetry ship` and the module comments
+  no longer describe the file sink as a stand-in for something missing.
+
 ### Added
 
 - **Mutation testing** (`keel mutate`). Diff-only, deterministic, gated on
@@ -67,8 +77,6 @@ semver.
 
 ### Blocked on human input
 
-- **Telemetry destination.** The local JSONL spool and `file` sink work.
-  `keel telemetry ship` writes a local bundle and says the real sink is missing.
 - **Org standards PDFs.** The pack format, loader, and gate runner are complete;
   only the three reference packs ship. Migrating the PDFs needs the PDFs.
 - **Component MCP server schema.** M7 (UI bridge) is not started. No speculative

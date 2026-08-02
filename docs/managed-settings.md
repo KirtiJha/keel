@@ -8,6 +8,13 @@ This is the recommendation. **Nothing here is implemented as managed policy** �
 every gate currently ships as plugin settings, which a repo can override. Moving
 any row into the managed column is an organisational decision.
 
+> **Decided for v1: nothing is managed.** The maintainer's answer to the three
+> questions below is *no managed settings, telemetry on by default, local-only*
+> — see `docs/decisions.md` §16. The recommendation column stands as written and
+> is the starting point for the review in step 3 of the sequence; it is not the
+> current configuration. **The two rows marked "Managed" below ship overridable
+> like everything else.**
+
 ---
 
 ## The principle
@@ -59,15 +66,18 @@ outcome is worse than the gate not existing.
 
 ---
 
-## What we need from you
+## Answered
 
-Three answers before any of this is implemented:
+1. **Anything managed in v1?** **No.** Everything ships overridable, including
+   the two rows recommended above. Lock things down later, with measured
+   false-positive rates, or not at all.
+2. **Who owns the exception process?** Moot while nothing is locked. Whoever
+   revisits question 1 inherits this one — and if the answer at that point is
+   "file a ticket", the gate should stay overridable.
+3. **Telemetry?** **On by default, local-only.** Opt-in would have sampled only
+   the teams already sold on Keel, which is the wrong population for judging
+   which gates are wrong. Nothing is transmitted: `.keel/telemetry` is JSONL on
+   local disk and `keel telemetry ship` bundles it to the same disk. This
+   retires the "telemetry destination" input — the destination is the file.
 
-1. **Do you want anything in managed settings at all in v1?** A defensible
-   answer is no — start with everything overridable and earn the right to lock
-   things down with data.
-2. **Who owns the exception process** for whatever does get locked down, and
-   what is the turnaround? If the answer is "file a ticket", the gate will be
-   worked around instead.
-3. **Telemetry**: is collection opt-in per repo, or on by default? This also
-   blocks the destination sink, which is still an outstanding input.
+Recorded in `docs/decisions.md` §16.

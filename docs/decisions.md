@@ -371,3 +371,39 @@ by the router, overridable per turn."
 
 "Overridable per turn" is Claude Code's own — Keel sets the default for the
 track and gets out of the way.
+
+---
+
+## 16. No managed settings in v1; telemetry on by default, local-only
+
+**Build spec M9.4** required a recommendation, not a decision: *"Do not decide
+this alone — produce the recommendation and ask."* `docs/managed-settings.md`
+carried the recommendation and three questions. The maintainer answered them:
+**no managed settings, telemetry on by default, local-only.**
+
+**No managed settings.** Every gate ships overridable, including the two the
+recommendation argued were safe to lock (test-weakening and archive-at-merge).
+The reasoning for waiting is stronger than the reasoning for either: a gate
+nobody can disable and nobody can satisfy does not get followed, it gets routed
+around — a different tool, a copied file, or the plugin switched off entirely.
+Locking something down is reversible in one direction only, so it should be
+earned with measured false-positive rates rather than assumed.
+
+The second question — who owns the exception process — is moot while nothing is
+locked, and is deliberately left unanswered rather than answered speculatively.
+Whoever revisits question one inherits it.
+
+**Telemetry on by default.** Opt-in per repo would have sampled only the teams
+already sold on Keel, which is precisely the wrong population for deciding
+which gates are wrong. Default-on is what makes the "earn it with data" answer
+to question one honest rather than a way of never deciding.
+
+**Local-only.** There is no remote sink and no plan for one. The spool is
+JSONL under `.keel/telemetry`, `keel telemetry show` reads it in place, and
+`ship` rolls it into a bundle on the same disk. This also retires the
+"telemetry destination" blocked input: the destination is the local file, not a
+stand-in for an endpoint someone still owes us.
+
+Constraint 0.6 already forbade network calls inside hooks. Local-only extends
+that to the whole tool, which means the redaction layer is now defence in depth
+rather than the only thing between a secret and a wire.

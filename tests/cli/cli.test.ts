@@ -320,15 +320,21 @@ describe("telemetry", () => {
     expect(run.stdout).toContain("nothing recorded yet");
   });
 
-  it("ships a bundle and states that the real sink is still missing", () => {
+  // keel: allow-test-change local-only telemetry is now the decision
+  // (decisions.md §16), so `ship` no longer reports a missing remote sink.
+  it("ships a bundle to local disk and says nothing is transmitted", () => {
     repo.write("README.md", "# a\n\nb\n");
     keel(["route"], repo.root);
 
     const run = keel(["telemetry", "ship"], repo.root);
     expect(run.status).toBe(0);
     expect(run.stdout).toContain("wrote");
-    expect(run.stdout).toContain("no remote sink is configured");
-    expect(run.stdout).toContain("blocked input");
+    expect(run.stdout).toContain("local only");
+
+    // The bundle is a real file on the same disk, not a staging step.
+    const bundle = /wrote \d+ events to (\S+)/.exec(run.stdout)?.[1];
+    expect(bundle).toBeTypeOf("string");
+    expect(existsSync(bundle as string)).toBe(true);
   });
 
   it("rejects an unknown subcommand", () => {

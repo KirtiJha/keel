@@ -397,7 +397,6 @@ reports their absence as a warning, so the lock is usable now.
 
 | Input | Needed for | Current state |
 |---|---|---|
-| Telemetry destination | shipping telemetry | Local spool and `file` sink work; `keel telemetry ship` writes a local bundle only. |
 | Org standards PDFs | migrating org rules to packs | Pack format, loader and gate runner are complete; only the three reference packs ship. |
 | Component MCP server schema | M7 (UI bridge) | Not started. No speculative client was written. |
 
@@ -415,16 +414,24 @@ Called out plainly rather than left to be discovered.
 | **Integration TDD (`outer_loop`)** | Deferred by the plan, not by us. The config carries `outer_loop: false` and honours it; turning it on later is one config line plus a standards pack. |
 | **Per-skill subsetting of Superpowers** | Not possible from settings. `skillOverrides` exists and Keel writes it, but Claude Code documents that it **does not affect plugin skills** — and Superpowers ships as a plugin. Its skills are managed whole-plugin through `/plugin`. This is a platform boundary, not a Keel gap, and `keel init` says so rather than writing settings that quietly do nothing. |
 
-## Open questions for the org
+## Policy decisions
 
-`docs/managed-settings.md` carries the M9.4 recommendation: which gates belong
-in **managed settings** (undisableable) versus plugin settings (overridable).
-Nothing is locked down today — everything ships overridable — and three
-questions need answering before that changes:
+**Nothing is in managed settings.** Every gate is overridable by the repo that
+runs it, including the two that `docs/managed-settings.md` argues are safe to
+lock. The case for waiting is simply that a gate a team can neither disable nor
+satisfy gets routed around — a different tool, a copied file, the plugin
+switched off — and that is a worse outcome than the gate not existing. Locking
+something down should be earned with measured false-positive rates.
 
-1. Do you want anything managed in v1? "No, earn it with data" is defensible.
-2. Who owns the exception process, and how fast is it?
-3. Is telemetry opt-in per repo, or on by default?
+**Telemetry is on by default and never leaves your machine.** Events are JSONL
+under `.keel/telemetry`; `keel telemetry show` reads them in place and
+`keel telemetry ship` bundles them to the same disk. There is no remote sink and
+no plan for one. It is on by default because opt-in would have sampled only the
+teams already sold on Keel, which is the wrong population for judging which
+gates are wrong. Set `telemetry.sink: none` to record nothing at all.
+
+Both recorded in `docs/decisions.md` §16; the M9.4 recommendation that preceded
+them is `docs/managed-settings.md`.
 
 ## Rules of the road
 
