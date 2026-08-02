@@ -1,0 +1,40 @@
+# Keel configuration. Schema: .keel/keel.config.schema.json
+version: 1
+
+repo:
+  name: keel
+  languages: [typescript, python]
+
+# Reasoning effort per track.
+tracks:
+  quick:    { effort: low }
+  standard: { effort: medium }
+  full:     { effort: high }
+
+router:
+  # Any change touching these is always full track.
+  force_full_globs:
+    - "**/migrations/**"
+    - "**/auth/**"
+    - "openapi/**"
+  quick_max_files: 1
+  quick_max_lines: 50
+  # More external callers than this escalates off the quick track.
+  escalate_caller_threshold: 5
+
+standards:
+  packs_ref: "keel-standards@0.1.0"
+  # Pack names to switch off in this repo.
+  disabled: []
+
+tdd:
+  enabled: true
+  # Integration TDD. Off until a harness exists; see keel-plan.md.
+  outer_loop: false
+  exempt_globs:
+    - "**/*.config.ts"
+    - "**/migrations/**"
+
+telemetry:
+  sink: file
+  path: ".keel/telemetry"

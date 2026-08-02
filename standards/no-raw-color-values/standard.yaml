@@ -1,0 +1,34 @@
+name: no-raw-color-values
+mode: gate
+applies_to:
+  - "**/*.ts"
+  - "**/*.tsx"
+  - "**/*.js"
+  - "**/*.jsx"
+languages: [typescript]
+owner: design-systems
+severity: high
+description: "Colours come from design tokens, never raw hex, rgb() or hsl() literals."
+config:
+  # Identifier prefixes that count as a token reference, so the rule can tell
+  # `tokens.color.bg` from `#0a0a0a` without a full type checker.
+  token_prefixes: ["tokens", "theme", "palette", "colors", "vars"]
+  # Property names whose value is a colour. Extend when the design system does.
+  color_properties:
+    - color
+    - backgroundColor
+    - background
+    - borderColor
+    - borderTopColor
+    - borderRightColor
+    - borderBottomColor
+    - borderLeftColor
+    - outlineColor
+    - fill
+    - stroke
+    - shadowColor
+    - caretColor
+    - textDecorationColor
+    - accentColor
+  # Values that are never a design decision.
+  allowed_literals: ["transparent", "inherit", "currentColor", "none", "unset", "initial"]

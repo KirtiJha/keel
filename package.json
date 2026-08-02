@@ -1,0 +1,55 @@
+{
+  "name": "@keel/keel",
+  "version": "0.1.0",
+  "description": "Spec-driven development plugin for Claude Code: routing, standards packs, TDD gates, terse output.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "keel": "./bin/keel.mjs"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "standards",
+    "skills",
+    "output-styles",
+    "agents",
+    "hooks",
+    ".claude-plugin",
+    "python"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests build.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "bench:coldstart": "node scripts-dev/bench-coldstart.mjs",
+    "bench:size": "node scripts-dev/bench-size.mjs",
+    "py:lint": "cd python && ruff check .",
+    "py:types": "cd python && mypy --strict keel_gates",
+    "py:test": "cd python && pytest -q",
+    "verify": "npm run typecheck && npm run lint && npm run build && npm run test && npm run bench:size && npm run bench:coldstart && npm run py:lint && npm run py:types && npm run py:test"
+  },
+  "dependencies": {
+    "picomatch": "^4.0.2",
+    "typescript": "^5.7.2",
+    "yaml": "^2.6.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/picomatch": "^3.0.1",
+    "@typescript-eslint/eslint-plugin": "^8.18.2",
+    "@typescript-eslint/parser": "^8.18.2",
+    "@vitest/coverage-v8": "^2.1.8",
+    "esbuild": "^0.24.2",
+    "eslint": "^9.17.0",
+    "vitest": "^2.1.8"
+  }
+}

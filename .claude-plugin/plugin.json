@@ -1,0 +1,21 @@
+{
+  "name": "keel",
+  "version": "0.1.0",
+  "description": "Spec-driven development: routes each change to the process it needs, enforces standards and TDD in-loop, and keeps terminal output terse.",
+  "author": {
+    "name": "Platform Team"
+  },
+  "homepage": "https://github.com/KirtiJha/keel",
+  "repository": "https://github.com/KirtiJha/keel",
+  "license": "UNLICENSED",
+  "keywords": [
+    "spec-driven-development",
+    "tdd",
+    "standards",
+    "code-review",
+    "governance"
+  ],
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills",
+  "outputStyles": "./output-styles"
+}

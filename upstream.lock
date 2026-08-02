@@ -1,0 +1,30 @@
+# Pinned upstream toolchains that Keel composes.
+#
+# Rule of the road 6: compose, don't fork. Pin exact versions, mirror them
+# internally, never patch.
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ BLOCKED INPUT — build spec §1                                           │
+# │                                                                         │
+# │ The build spec says to ask for these versions and explicitly forbids     │
+# │ resolving `latest`. Nobody has supplied them yet, so they are recorded   │
+# │ as UNPINNED. `keel check` fails on every UNPINNED entry and names the    │
+# │ fix; that failure is the intended behaviour, not an oversight.           │
+# │                                                                         │
+# │ To unblock: replace each UNPINNED with the exact version the owning      │
+# │ team has approved, add the internal mirror, and re-run `keel check`.     │
+# └─────────────────────────────────────────────────────────────────────────┘
+version: 1
+
+dependencies:
+  superpowers:
+    version: UNPINNED
+    source: "obra/superpowers"
+    # mirror: "internal-registry/superpowers@<version>"
+    owns: [planning, implementation]
+
+  openspec:
+    version: UNPINNED
+    source: "Fission-AI/OpenSpec"
+    # mirror: "internal-registry/openspec@<version>"
+    owns: [design, spec-conformance]

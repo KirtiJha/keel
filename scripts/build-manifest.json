@@ -1,0 +1,33 @@
+{
+  "generated": "npm run build",
+  "entries": [
+    {
+      "name": "cli",
+      "bytes": 525679
+    },
+    {
+      "name": "session-start",
+      "bytes": 490093
+    },
+    {
+      "name": "pre-tool-use",
+      "bytes": 156097
+    },
+    {
+      "name": "post-tool-use",
+      "bytes": 181289
+    },
+    {
+      "name": "post-bash",
+      "bytes": 128965
+    },
+    {
+      "name": "message-display",
+      "bytes": 127604
+    },
+    {
+      "name": "session-end",
+      "bytes": 124261
+    }
+  ]
+}

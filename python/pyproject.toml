@@ -1,0 +1,39 @@
+[project]
+name = "keel-gates"
+version = "0.1.0"
+description = "Python AST analysis for the Keel Claude Code plugin: router symbols and diff-only gates."
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["keel_gates"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# BLE is selected deliberately, not ignored. The gate runner *does* catch broad
+# exceptions — a crashing rule must degrade to "no findings" rather than take
+# the developer's session down — but each of those sites carries an explicit
+# `noqa: BLE001` and a reason. Selecting the rule means any new broad except has
+# to justify itself the same way.
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "RET", "PTH", "RUF", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+disallow_any_explicit = false
+files = ["keel_gates"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

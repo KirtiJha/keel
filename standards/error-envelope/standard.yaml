@@ -1,0 +1,22 @@
+name: error-envelope
+mode: gate
+applies_to:
+  - "**/handlers/**/*.ts"
+  - "**/handlers/**/*.tsx"
+  - "**/handlers/**/*.py"
+  - "**/routes/**/*.ts"
+  - "**/routes/**/*.py"
+languages: [typescript, python]
+owner: platform-team
+severity: high
+description: "API error responses use the shared ErrorResponse envelope, never an ad-hoc object literal."
+config:
+  # The helper that builds the envelope. A call to it is always accepted.
+  envelope_factory: errorResponse
+  python_envelope_factory: error_response
+  envelope_type: ErrorResponse
+  # Object keys that mark a payload as an error response.
+  error_keys: [error, errors, message, detail, code]
+  # Response constructors whose body argument is checked.
+  response_senders: [json, send, jsonify, JSONResponse]
+  min_error_status: 400
