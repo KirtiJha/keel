@@ -17,7 +17,7 @@ import {
   gateTestWeakening,
 } from "./gates.js";
 import { existingTestFor, isTestFile } from "./pairing.js";
-import { isImplemented, recordImplemented, recordTestWritten, redObservedFor } from "./state.js";
+import { readBranchLedger, recordImplementedAll, recordTestWritten } from "./state.js";
 import { findOverrides } from "./vocabulary.js";
 
 /**
@@ -154,24 +154,31 @@ export async function runTddGates(options: TddRunOptions): Promise<TddRunResult>
       : await symbolsOf(options.pluginRoot, path, beforeText);
     const afterSymbols = await symbolsOf(options.pluginRoot, path, after);
 
+    // The ledger is read *once* per hook invocation, not once per question.
+    // Reading it inside the filter below, and again for the RED lookup, meant a
+    // 20-symbol edit re-folded the whole journal 21 times: 40 s against a 600 ms
+    // budget and a 30 s platform timeout, so the gate reached no verdict at all.
+    const ledger = readBranchLedger(options.repoRoot);
+
     const newSymbols = diffSymbols(beforeSymbols, afterSymbols)
       .filter((d) => d.change === "added")
       .map((d) => d.name)
       // A symbol already waved through on this branch never asks again.
-      .filter((name) => !isImplemented(options.repoRoot, `${path}#${name}`));
+      .filter((name) => !ledger.isImplemented(`${path}#${name}`));
 
     if (newSymbols.length > 0) {
       const testFile = existingTestFor(options.repoRoot, path);
       const status = testFile === null
         ? { observed: false, testFile: null, reason: "no test file exists for this module" }
-        : redObservedFor(options.repoRoot, testFile);
+        : ledger.redObservedFor(testFile);
 
       const outcome = gateObservedRed(newSymbols, status, path);
       outcomes.push(outcome);
 
-      // Once satisfied, stop asking about these symbols for this branch.
+      // Once satisfied, stop asking about these symbols for this branch. One
+      // record for the whole set: one `git rev-parse`, one append.
       if (outcome.violations.length === 0) {
-        for (const name of newSymbols) recordImplemented(options.repoRoot, `${path}#${name}`);
+        recordImplementedAll(options.repoRoot, newSymbols.map((name) => `${path}#${name}`));
       }
     }
   }
