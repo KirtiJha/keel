@@ -1179,6 +1179,48 @@ describe("gate and trust together", () => {
     expect(parsed.ok).toBe(false);
     expect(parsed.untrusted).toContain("needs-approval");
   });
+
+  // The seam between two fixes. Requiring approval protects a developer's
+  // machine; running the gates in CI is what stops a change written outside
+  // Claude Code from skipping every org rule. Composed naively they cancel:
+  // a runner cannot approve anything and cannot keep a signing key, so every
+  // repo-local pack reports unapproved and CI is permanently red, advising a
+  // machine to run a command only a human can. CI opts out explicitly.
+  it("runs repo-local rules under --trust-repo-rules, the way CI does", () => {
+    const run = keel(["gate", "--trust-repo-rules"], repo.root);
+    expect(run.status).toBe(0);
+    expect(run.stdout).not.toContain("did not run");
+    expect(run.stdout).toContain("no blocking findings");
+  });
+
+  it("still catches a real violation under --trust-repo-rules", () => {
+    // The flag must not become a way to make the gates stop firing — that
+    // would be a worse bug than the one it fixes.
+    repo.write(
+      "standards/needs-approval/rule.ts",
+      "export default (ctx) => ctx.source.includes('BANNED')\n" +
+        "  ? [{ line: 1, message: 'banned token' }]\n  : [];\n",
+    );
+    repo.commit("rule that actually fires");
+    repo.write("src/thing.ts", "export const a = 'BANNED';\n");
+
+    const run = keel(["gate", "--trust-repo-rules"], repo.root);
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain("banned token");
+  });
+
+  it("does not print `fix: undefined` when a rule supplies no fix", () => {
+    repo.write(
+      "standards/needs-approval/rule.ts",
+      "export default () => [{ line: 1, message: 'no fix offered' }];\n",
+    );
+    repo.commit("rule without a fix");
+    repo.write("src/thing.ts", "export const a = 2;\n");
+
+    const run = keel(["gate", "--trust-repo-rules"], repo.root);
+    expect(run.stdout).toContain("no fix offered");
+    expect(run.stdout).not.toContain("undefined");
+  });
 });
 
 describe("the reviewer subagent is registered exactly once", () => {

@@ -66,6 +66,12 @@ export interface RunGatesOptions {
   readonly changedLines?: ReadonlySet<number>;
   /** Whole-run deadline in ms. Defaults to `RUN_BUDGET_MS`. */
   readonly budgetMs?: number;
+  /**
+   * Treat repo-local rules as approved. For a sandbox that already runs this
+   * repo's code — CI — where there is no human to approve and no key to sign
+   * with. See `TrustOptions` in `./trust.js`.
+   */
+  readonly trustRepoRules?: boolean;
 }
 
 /**
@@ -299,7 +305,9 @@ async function runTsPack(
   timeoutMs: number,
 ): Promise<GateResult> {
   const timer = stopwatch();
-  const loaded = await loadRule(options.repoRoot, options.pluginRoot, pack);
+  const loaded = await loadRule(options.repoRoot, options.pluginRoot, pack, {
+    ...(options.trustRepoRules === true ? { trustRepoRules: true } : {}),
+  });
 
   if (loaded.kind === "untrusted") {
     // Not a failure: a repo-local rule is code, and this repository has not
@@ -375,7 +383,9 @@ function runPythonPacks(
   // decision as importing a `rule.ts`, so the same approval gates it.
   const runnable: LoadedPack[] = [];
   for (const pack of packs) {
-    const trust = ruleTrust(options.repoRoot, options.pluginRoot, pack, pack.rulePyPath ?? "");
+    const trust = ruleTrust(options.repoRoot, options.pluginRoot, pack, pack.rulePyPath ?? "", undefined, {
+      ...(options.trustRepoRules === true ? { trustRepoRules: true } : {}),
+    });
     if (trust.kind === "untrusted") {
       logDebug("pack rule not run: untrusted", { pack: pack.standard.name, reason: trust.reason });
       out.push(notRun(pack, "untrusted", trust.reason, 0));
@@ -534,7 +544,9 @@ export function formatBlocking(summary: GateRunSummary): string {
     const block = [
       `  ${f.path}:${f.line}${f.column === undefined ? "" : `:${f.column}`}  [${f.pack}]`,
       `    ${clip(f.message)}`,
-      `    fix: ${clip(f.fix)}`,
+      // `fix` is optional on a Finding. Rendering it unconditionally printed
+      // the literal "undefined" to a developer as though it were advice.
+      ...(f.fix === undefined || f.fix === "" ? [] : [`    fix: ${clip(f.fix)}`]),
       "",
     ];
     const cost = block.reduce((n, l) => n + l.length + 1, 0);

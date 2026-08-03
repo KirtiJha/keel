@@ -104,6 +104,11 @@ export const COMMANDS: readonly CommandSpec[] = [
         kind: "boolean",
         help: "hold nothing back: advisory findings (gate), every untrusted pack (trust add)",
       },
+      {
+        name: "trust-repo-rules",
+        kind: "boolean",
+        help: "run repo-local pack rules without approval — for CI, which already runs this repo's code",
+      },
     ],
   },
   {

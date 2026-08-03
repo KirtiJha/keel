@@ -9,7 +9,7 @@ import { keelSubdir } from "../shared/paths.js";
 import { errorMessage, type Result, err, ok } from "../shared/result.js";
 
 import type { LoadedPack } from "./loader.js";
-import { isPluginPack, machineMac, macEquals, ruleTrust, sha256Bytes } from "./trust.js";
+import { isPluginPack, machineMac, macEquals, ruleTrust, sha256Bytes, type TrustOptions } from "./trust.js";
 import type { Rule } from "./types.js";
 
 /**
@@ -181,6 +181,7 @@ export async function loadRule(
   repoRoot: string,
   pluginRoot: string,
   pack: LoadedPack,
+  trustOptions: TrustOptions = {},
 ): Promise<LoadedRule> {
   const sourcePath = pack.ruleTsPath;
   if (sourcePath === null) return { kind: "none" };
@@ -201,7 +202,7 @@ export async function loadRule(
 
   // Decided on the bytes we are about to compile, not on a second read of the
   // path, and always before the import.
-  const trust = ruleTrust(repoRoot, pluginRoot, pack, sourcePath, raw);
+  const trust = ruleTrust(repoRoot, pluginRoot, pack, sourcePath, raw, trustOptions);
   if (trust.kind === "untrusted") {
     logDebug("pack rule not run: untrusted", { pack: pack.standard.name, reason: trust.reason });
     return { kind: "untrusted", reason: trust.reason };

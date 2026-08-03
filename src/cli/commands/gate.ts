@@ -28,6 +28,16 @@ export interface GateOptions {
   readonly json: boolean;
   /** Print advisory findings too, not just blocking ones. */
   readonly all: boolean;
+  /**
+   * Run repo-local pack rules without an approval.
+   *
+   * For CI, which has already checked this repository out and is already
+   * running its code. Without it every repo-local pack reports as unapproved
+   * and the run fails, advising a machine to run `keel trust add` — which it
+   * cannot, because an approval is signed against a key that does not survive
+   * the runner. That would make the gates reachable from CI in name only.
+   */
+  readonly trustRepoRules: boolean;
 }
 
 interface FileOutcome {
@@ -86,6 +96,7 @@ export async function gate(options: GateOptions): Promise<number> {
     }
 
     const result = await runGates({
+      ...(options.trustRepoRules ? { trustRepoRules: true } : {}),
       repoRoot: options.repoRoot,
       pluginRoot: options.pluginRoot,
       config,
@@ -186,7 +197,7 @@ export async function gate(options: GateOptions): Promise<number> {
     for (const finding of blocking) {
       fail(`${finding.path}:${finding.line}${finding.column === undefined ? "" : `:${finding.column}`}  ${dim(`[${finding.pack}]`)}`);
       detail(finding.message);
-      detail(`fix: ${finding.fix}`);
+      if (finding.fix !== undefined && finding.fix !== "") detail(`fix: ${finding.fix}`);
     }
   }
 
@@ -195,7 +206,7 @@ export async function gate(options: GateOptions): Promise<number> {
     for (const finding of advisory) {
       warn(`${finding.path}:${finding.line}  ${dim(`[${finding.pack}]`)}`);
       detail(finding.message);
-      detail(`fix: ${finding.fix}`);
+      if (finding.fix !== undefined && finding.fix !== "") detail(`fix: ${finding.fix}`);
     }
   }
 

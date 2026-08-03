@@ -218,6 +218,7 @@ async function main(): Promise<number> {
         against,
         json: flagBool(args, "json"),
         all: flagBool(args, "all"),
+        trustRepoRules: flagBool(args, "trust-repo-rules"),
       });
     }
 

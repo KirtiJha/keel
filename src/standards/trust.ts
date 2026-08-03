@@ -285,6 +285,34 @@ export type RuleTrust =
     };
 
 /**
+ * Run repo-local rules without an approval, for callers where approval is
+ * meaningless.
+ *
+ * **Why this exists.** Approval protects a *developer's machine* from a
+ * repository they have merely opened: cloning something and letting Claude Code
+ * edit one file should not execute that repository's code. CI is the opposite
+ * situation. A CI job has already checked the repository out and is already
+ * running its code — `npm ci` runs its install scripts, `npm test` runs its
+ * tests. A pack rule is not a new privilege there, and there is no human at a
+ * terminal to grant one.
+ *
+ * Without this, the two fixes cancel out: `keel gate` in CI reports every
+ * repo-local pack as unapproved and exits 1, telling a machine to run
+ * `keel trust add` — advice it cannot take, because the approval is signed
+ * against a key that does not survive the runner. The gates would be reachable
+ * from CI in name only.
+ *
+ * It is a deliberate flag rather than a `CI=true` sniff. Environments set `CI`
+ * for all sorts of reasons, and a security boundary that disables itself on a
+ * variable someone else controls is not a boundary. Passing this is a choice a
+ * human makes once, visibly, in a workflow file.
+ */
+export interface TrustOptions {
+  /** Treat repo-local rules as approved. Only for a sandbox that already runs this repo's code. */
+  readonly trustRepoRules?: boolean;
+}
+
+/**
  * May this rule file run?
  *
  * The one decision point. Both the TypeScript loader and the Python runner call
@@ -300,8 +328,13 @@ export function ruleTrust(
   pack: LoadedPack,
   ruleFile: string,
   contents?: Buffer,
+  options: TrustOptions = {},
 ): RuleTrust {
   if (isPluginPack(pack, pluginRoot)) return { kind: "plugin" };
+  if (options.trustRepoRules === true) {
+    const bytes = contents === undefined ? sha256File(ruleFile) : sha256Bytes(contents);
+    return { kind: "trusted", sha256: bytes ?? "" };
+  }
 
   const sha256 = contents === undefined ? sha256File(ruleFile) : sha256Bytes(contents);
   if (sha256 === null) {

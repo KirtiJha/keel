@@ -238,7 +238,14 @@ jobs:
             echo "root commit — no base to diff against, nothing to gate"
             exit 0
           fi
-          node scripts/cli.mjs gate --against "$base"
+          # `--trust-repo-rules` because a runner cannot approve anything. Rule
+          # approval protects a developer's machine from a repository they have
+          # merely opened; this job has already checked the repository out and
+          # is already running its code, so the approval adds no privilege and
+          # there is no key that survives the runner to sign one. Without the
+          # flag every repo-local pack reports unapproved and this job fails
+          # telling a machine to run `keel trust add`.
+          node scripts/cli.mjs gate --against "$base" --trust-repo-rules
 
   self-check:
     name: keel check (dogfood)

@@ -3,7 +3,7 @@
   "entries": [
     {
       "name": "cli",
-      "bytes": 615941
+      "bytes": 616425
     },
     {
       "name": "session-start",
@@ -15,7 +15,7 @@
     },
     {
       "name": "post-tool-use",
-      "bytes": 197416
+      "bytes": 197654
     },
     {
       "name": "post-bash",
