@@ -139,8 +139,3 @@ export function overrideFor(
 ): OverrideDirective | null {
   return overrides.find((o) => o.line === line || o.line === line - 1) ?? null;
 }
-
-/** A file-level override suppresses the whole gate for this edit. */
-export function fileOverride(overrides: readonly OverrideDirective[]): OverrideDirective | null {
-  return overrides[0] ?? null;
-}

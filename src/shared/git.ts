@@ -46,19 +46,6 @@ export function currentBranch(root: string): string {
   return res.ok ? res.value.trim() : "unknown";
 }
 
-export function headSha(root: string): string | null {
-  const res = git(root, ["rev-parse", "HEAD"]);
-  return res.ok ? res.value.trim() : null;
-}
-
-/** Merge base against a base ref; falls back to the ref itself when unrelated. */
-export function mergeBase(root: string, baseRef: string): string | null {
-  const res = git(root, ["merge-base", "HEAD", baseRef]);
-  if (res.ok) return res.value.trim();
-  const direct = git(root, ["rev-parse", baseRef]);
-  return direct.ok ? direct.value.trim() : null;
-}
-
 const STATUS_MAP: Readonly<Record<string, FileChange["status"]>> = {
   A: "added",
   M: "modified",

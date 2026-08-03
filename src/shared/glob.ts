@@ -1,6 +1,5 @@
 import picomatch from "picomatch";
 
-import { toRepoRelative } from "./paths.js";
 
 export type Matcher = (repoRelativePath: string) => boolean;
 
@@ -33,15 +32,6 @@ export function matchesAny(repoRelativePath: string, globs: readonly string[]): 
 /** Which globs in the set matched? Used to explain routing decisions. */
 export function matchingGlobs(repoRelativePath: string, globs: readonly string[]): string[] {
   return globs.filter((g) => compileGlobs([g])(repoRelativePath));
-}
-
-/** Convenience for call sites holding an absolute path. */
-export function matchesAnyAbsolute(
-  root: string,
-  absolutePath: string,
-  globs: readonly string[],
-): boolean {
-  return matchesAny(toRepoRelative(root, absolutePath), globs);
 }
 
 /**

@@ -184,14 +184,6 @@ export async function readStdinDetailed(
   });
 }
 
-/**
- * Read all of stdin, with a timeout so a hook can never hang the session when
- * no payload arrives (for example when run by hand from a shell).
- */
-export async function readStdin(idleMs = STDIN_IDLE_MS): Promise<string> {
-  return (await readStdinDetailed(idleMs)).text;
-}
-
 export function parseHookInput(raw: string): HookInput {
   if (raw.trim() === "") return {};
   try {

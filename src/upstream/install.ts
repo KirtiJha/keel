@@ -402,8 +402,3 @@ export function marketplaceSettings(lock: UpstreamLock): Record<string, unknown>
 
   return out;
 }
-
-/** True when the repo looks like it has a Claude Code plugin cache configured. */
-export function pluginDirExists(root: string): boolean {
-  return isDirectory(join(root, ".claude", "plugins"));
-}

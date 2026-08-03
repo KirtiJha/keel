@@ -133,43 +133,9 @@ export function testCandidatesFor(repoRelPath: string): string[] {
   return [...new Set(out)];
 }
 
-/** Candidate source files for a test file. */
-export function sourceCandidatesFor(repoRelPath: string): string[] {
-  const ext = extname(repoRelPath);
-  const dir = posix(dirname(repoRelPath));
-  const stem = stemOf(repoRelPath);
-  const out: string[] = [];
-
-  if (ext === ".py") {
-    out.push(
-      posix(join(dir, `${stem}.py`)),
-      posix(join(dir.replace(/^tests?/, "src"), `${stem}.py`)),
-      posix(join(dir.replace(/^tests?\/?/, ""), `${stem}.py`)),
-      `${stem}.py`,
-    );
-  } else {
-    const withoutTests = dir.replace(/\/__tests__$/, "");
-    for (const candidate of [dir, withoutTests, dir.replace(/^tests/, "src")]) {
-      for (const e of [ext, ".ts", ".tsx", ".js"]) {
-        out.push(posix(join(candidate, `${stem}${e}`)));
-      }
-    }
-  }
-
-  return [...new Set(out)];
-}
-
 /** The first candidate test file that exists on disk. */
 export function existingTestFor(root: string, repoRelPath: string): string | null {
   for (const candidate of testCandidatesFor(repoRelPath)) {
-    if (isFile(join(root, candidate))) return candidate;
-  }
-  return null;
-}
-
-/** The first candidate source file that exists on disk. */
-export function existingSourceFor(root: string, repoRelPath: string): string | null {
-  for (const candidate of sourceCandidatesFor(repoRelPath)) {
     if (isFile(join(root, candidate))) return candidate;
   }
   return null;

@@ -36,10 +36,6 @@ function currentSession(): string {
   return sessionId;
 }
 
-export function setSessionId(id: string): void {
-  process.env["KEEL_SESSION_ID"] = id;
-}
-
 /**
  * Where the spool lives.
  *

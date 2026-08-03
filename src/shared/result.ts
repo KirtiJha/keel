@@ -12,10 +12,6 @@ export function err<E>(error: E): Err<E> {
   return { ok: false, error };
 }
 
-export function isOk<T, E>(r: Result<T, E>): r is Ok<T> {
-  return r.ok;
-}
-
 /** Narrow an unknown thrown value to a message without losing stack context. */
 export function errorMessage(cause: unknown): string {
   if (cause instanceof Error) return cause.message;

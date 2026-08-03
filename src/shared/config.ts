@@ -14,8 +14,9 @@ import { asBool, asEnum, asEnumArray, asInt, asScore, asString, asStringArray, a
  * by `keel check`, `keel init`, and `SessionStart` — the places that are
  * supposed to fail loud, per constraint 0.9.
  *
- * `tests/shared/config-crosscheck.test.ts` runs the same corpus through both
- * and asserts identical output, so the fast path cannot drift from the schema.
+ * `tests/shared/config.test.ts` ("cross-check — the fast reader matches the
+ * strict schema") runs the same corpus through both and asserts identical
+ * output, so the fast path cannot drift from the schema.
  */
 
 export const EFFORTS = ["low", "medium", "high"] as const;

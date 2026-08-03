@@ -218,10 +218,11 @@ jobs:
     # org rules are enforced for some authors and not others. This job is where
     # they apply to everyone.
     #
-    # `keel gate` accepts `--against <ref>`, `--json` and `--all`
-    # (`src/cli/registry.ts`, wired in `src/cli/main.ts`). `--all` is
-    # deliberately not passed: CI blocks on `high`-severity findings, and
-    # advisory ones belong in the editing loop where they can be acted on.
+    # `keel gate` accepts `--against <ref>`, `--json`, `--all` and
+    # `--trust-repo-rules` (`src/cli/registry.ts`, wired in `src/cli/main.ts`).
+    # `--all` is deliberately not passed: CI blocks on `high`-severity findings,
+    # and advisory ones belong in the editing loop where they can be acted on.
+    # `--trust-repo-rules` is passed, for the reason given at the step itself.
     steps:
       - uses: actions/checkout@v4
         with:

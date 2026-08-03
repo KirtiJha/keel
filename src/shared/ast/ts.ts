@@ -27,11 +27,6 @@ export async function loadTypeScript(): Promise<typeof TS | null> {
   return cached;
 }
 
-/** Reset the module cache. Test-only seam; production never calls this. */
-export function resetTypeScriptCache(): void {
-  cached = undefined;
-}
-
 const TS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
 export function isTypeScriptLike(path: string): boolean {

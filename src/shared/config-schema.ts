@@ -39,8 +39,6 @@ const GlobList = z.array(z.string().min(1, "glob must not be empty"));
 
 export const EffortSchema = z.enum(EFFORTS);
 export const LanguageSchema = z.enum(LANGUAGES);
-export const TrackSchema = z.enum(["quick", "standard", "full"]);
-
 export const KeelConfigSchema = z
   .strictObject({
     version: z.literal(1),

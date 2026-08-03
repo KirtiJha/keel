@@ -55,9 +55,7 @@ export function log(level: LogLevel, message: string, data?: Record<string, unkn
   }
 }
 
-export const logDebug = (m: string, d?: Record<string, unknown>): void => log("debug", m, d);
-export const logInfo = (m: string, d?: Record<string, unknown>): void => log("info", m, d);
-export const logWarn = (m: string, d?: Record<string, unknown>): void => log("warn", m, d);
+export const logDebug = (m: string, d?: Record<string, unknown>): void => log("debug", m, d);export const logWarn = (m: string, d?: Record<string, unknown>): void => log("warn", m, d);
 export const logError = (m: string, d?: Record<string, unknown>): void => log("error", m, d);
 
 /** Millisecond stopwatch used to record measured (never assumed) hook timings. */

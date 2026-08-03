@@ -67,24 +67,6 @@ export const BINARY_MUTATIONS: Readonly<Record<string, { to: string; operator: O
   "||": { to: "&&", operator: "logical" },
 };
 
-/** Python's spellings, where they differ. */
-export const PYTHON_BINARY_MUTATIONS: Readonly<
-  Record<string, { to: string; operator: OperatorName }>
-> = {
-  "<": { to: "<=", operator: "conditional-boundary" },
-  "<=": { to: "<", operator: "conditional-boundary" },
-  ">": { to: ">=", operator: "conditional-boundary" },
-  ">=": { to: ">", operator: "conditional-boundary" },
-  "==": { to: "!=", operator: "negate-conditional" },
-  "!=": { to: "==", operator: "negate-conditional" },
-  "+": { to: "-", operator: "arithmetic" },
-  "-": { to: "+", operator: "arithmetic" },
-  "*": { to: "/", operator: "arithmetic" },
-  "/": { to: "*", operator: "arithmetic" },
-  "%": { to: "*", operator: "arithmetic" },
-  and: { to: "or", operator: "logical" },
-  or: { to: "and", operator: "logical" },
-};
 
 /**
  * Deterministic ordering, then a deterministic cap.

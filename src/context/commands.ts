@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { parse as parseYaml } from "yaml";
 
 import { isFile } from "../shared/paths.js";
 
@@ -215,14 +214,4 @@ export function detectLanguages(root: string): Array<"typescript" | "python"> {
     out.push("python");
   }
   return out.length > 0 ? out : ["typescript"];
-}
-
-/** Read a YAML file, returning null instead of throwing. */
-export function readYamlFile(path: string): unknown {
-  if (!isFile(path)) return null;
-  try {
-    return parseYaml(readFileSync(path, "utf8"));
-  } catch {
-    return null;
-  }
 }

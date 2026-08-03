@@ -32,8 +32,6 @@ export const UNPINNED = "UNPINNED" as const;
  *   from it, and installing it would put a second owner on design and planning.
  */
 export const ROLES = ["install", "pattern-source"] as const;
-export type Role = (typeof ROLES)[number];
-
 const DependencySchema = z
   .object({
     /** Semver, a git tag, or the literal `UNPINNED` until a human supplies one. */
@@ -229,10 +227,6 @@ export function validateLock(lock: UpstreamLock): LockIssue[] {
   }
 
   return issues;
-}
-
-export function isFullyPinned(lock: UpstreamLock): boolean {
-  return validateLock(lock).every((i) => i.severity !== "error");
 }
 
 /** Dependencies Keel actually installs, as opposed to pattern sources. */

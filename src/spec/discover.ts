@@ -64,10 +64,6 @@ export function changesDir(root: string, config: KeelConfig): string {
   return join(specRoot(root, config), "changes");
 }
 
-export function archiveDir(root: string, config: KeelConfig): string {
-  return join(changesDir(root, config), "archive");
-}
-
 /**
  * Depth cap for the spec tree. OpenSpec's deepest documented layout is
  * `changes/<id>/specs/<capability>/spec.md` — three levels below the change.
