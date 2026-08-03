@@ -1,8 +1,9 @@
 # Keel
 
-Spec-driven development as a Claude Code plugin. Keel decides how much process a
-change actually needs, enforces standards and TDD while the code is being
-written, and keeps the terminal readable.
+Spec-driven development for Claude Code. Keel decides how much process a change
+actually needs, enforces standards and TDD while the code is being written, and
+keeps the terminal readable. It installs from a checkout with `keel init` — there
+is no marketplace.
 
 *A keel is the backbone a ship is built around. Small, structural, invisible once
 you're sailing.*
@@ -64,10 +65,11 @@ tuning exercise.
 
 Stated up front rather than discovered three days in.
 
-**Claude Code only.** The gates run as Claude Code hooks, the skills and output
-style are Claude Code components `keel init` installs into your repository, and
-there is no CLI-only mode that reproduces in-loop enforcement. On Cursor, Copilot, Aider or a bare terminal, none of it
-fires. The CLI still answers questions; nothing stops anything.
+**Claude Code only.** The gates run as Claude Code hooks, and the skills and
+output style are Claude Code components `keel init` installs into your
+repository. There is no CLI-only mode that reproduces in-loop enforcement: on
+Cursor, Copilot, Aider or a bare terminal, none of it fires. The CLI still
+answers questions; nothing stops anything.
 
 **TypeScript and Python only.** Symbol extraction for the router, the gate
 runner's AST layer, the TDD gates' test pairing and the mutation operators are
@@ -124,9 +126,13 @@ That writes four things Claude Code discovers on its own:
 | output style | `.claude/output-styles/keel.md` | committed, off until you select it |
 | the reviewer subagent | `.claude/agents/keel-reviewer.md` | committed |
 
-Then `/reload-plugins` — or just start a new session — and check it took: a new
-session should open with Keel's process notes injected. That is the SessionStart
-hook, and it is the cheapest proof the wiring is live.
+Then start a new session and check it took: it should open with Keel's process
+notes injected. That is the SessionStart hook, and it is the cheapest proof the
+wiring is live.
+
+A new session rather than `/reload-plugins`, because none of this is a plugin —
+Claude Code picks up changed settings on its own, but the output style is read
+once at session start.
 
 **Everyone on the team runs `keel init` once.** The hook commands name an
 absolute path to *your* Keel checkout, and yours is not where a teammate put
@@ -155,11 +161,12 @@ keel doctor        # what is active, how fast it runs, how often gates fire
 
 **Commit what `keel init` writes before you make another change.** `init` prints
 the exact `git add` line for what it created; this is the step people skip and
-then blame the router for. Those six files sit in the working tree, and the
-router classifies the working tree — only `.keel/` is excluded from the diff. Six
-new files and roughly 200 lines is well past `quick_max_files: 1`, so the next
-two-line fix routes to **standard** and asks for a plan. Commit first and it
-routes to quick, which is the whole point.
+then blame the router for. Everything it wrote sits in the working tree, and the
+router classifies the working tree — only `.keel/` and the gitignored
+`.claude/settings.local.json` are excluded. Measured on a fresh repo, that is
+**10 files and 690 lines**, well past `quick_max_files: 1`, so `keel route` says
+`standard` and the next two-line fix asks for a plan. Commit first and it routes
+to quick, which is the whole point.
 
 What `init` writes, and whether it belongs in git:
 
@@ -401,9 +408,9 @@ surfaces a skill when the change touches matching paths and only ever suggests;
 
 Gates run in two places, on the same rules and the same diff-only evaluation: the
 PostToolUse hook, while Claude Code is editing, and `keel gate` in CI. The second
-is what covers a change written in another editor, by a bot, or by anyone
-without the plugin installed — without it, org rules apply to some authors and
-not others.
+is what covers a change written in another editor, by a bot, or by anyone who
+has not run `keel init` — without it, org rules apply to some authors and not
+others.
 
 Adding a standard is a folder plus a PR — zero changes to `src/`. That is
 enforced by a test which drops a brand-new pack into a temp directory and asserts
