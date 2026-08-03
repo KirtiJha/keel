@@ -1,10 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { parse as parseYaml } from "yaml";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { defaultConfig } from "../../src/shared/config.js";
+import { validateConfig } from "../../src/shared/config-schema.js";
 import { PLUGIN_ROOT, TempRepo } from "../helpers/temp-repo.js";
 
 /** The CLI, run as a real process — exit codes are the contract CI depends on. */
@@ -17,12 +20,21 @@ interface Run {
   readonly stderr: string;
 }
 
-function keel(args: readonly string[], cwd: string): Run {
+/**
+ * `env` overrides the inherited environment for one run.
+ *
+ * The case that matters is `KEEL_HOME`: trust approvals are signed with a
+ * machine key kept outside every repository, so a test that wants the *consumer*
+ * experience — a checkout that has never approved anything, on a machine that
+ * has no key — has to point that key somewhere fresh. Inheriting the developer's
+ * own `~/.keel` is how the untrusted path stops being exercised.
+ */
+function keel(args: readonly string[], cwd: string, env: Record<string, string> = {}): Run {
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd,
     encoding: "utf8",
     timeout: 60_000,
-    env: { ...process.env, NO_COLOR: "1", CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT },
+    env: { ...process.env, NO_COLOR: "1", CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, ...env },
   });
   return { status: result.status ?? -1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
@@ -996,14 +1008,56 @@ describe("keel trust", () => {
     expect(run.stdout).toContain("ships with the plugin");
   });
 
-  it("lists an unapproved repo-local rule with its path and hash", () => {
+  // keel: allow-test-change the exit-code assertion here was `toBe(1)`, and
+  // that was the defect: a read-only listing command that fails whenever
+  // anything is unapproved aborts any `set -e` script that tries to *show* the
+  // developer what needs approving. Failing on an unapproved pack is `keel
+  // gate`'s job, asserted below and unchanged.
+  it("lists an unapproved repo-local rule with its path and hash, and still exits 0", () => {
     localPack("house-style");
     const run = keel(["trust", "list"], repo.root);
-    expect(run.status).toBe(1);
+    expect(run.status).toBe(0);
     expect(run.stdout).toContain("house-style");
     expect(run.stdout).toContain("standards/house-style/rule.ts");
     expect(run.stdout).toContain("sha256:");
     expect(run.stdout).toContain("keel trust add house-style");
+  });
+
+  it("says which command does fail on an unapproved rule", () => {
+    localPack("house-style");
+    expect(keel(["trust", "list"], repo.root).stdout).toContain("`keel gate` is the command that fails");
+  });
+
+  it("exits 0 from --json too, with the same counts", () => {
+    localPack("house-style");
+    const run = keel(["trust", "list", "--json"], repo.root);
+    expect(run.status).toBe(0);
+    expect((JSON.parse(run.stdout) as { untrustedCount: number }).untrustedCount).toBe(1);
+  });
+
+  it("survives `set -e`, which is what the exit code broke", () => {
+    // The listing is the first thing a setup script runs; under `set -e` an
+    // exit 1 killed the script before it could print the packs to approve.
+    localPack("house-style");
+    const script = spawnSync(
+      "sh",
+      ["-euc", `"$1" "$2" trust list > /dev/null && echo REACHED`, "sh", process.execPath, CLI],
+      {
+        cwd: repo.root,
+        encoding: "utf8",
+        timeout: 60_000,
+        env: { ...process.env, NO_COLOR: "1", CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT },
+      },
+    );
+    expect(script.stdout).toContain("REACHED");
+    expect(script.status).toBe(0);
+  });
+
+  it("leaves `keel gate` failing on the same unapproved rule", () => {
+    localPack("house-style");
+    repo.commit("add repo-local pack");
+    repo.write("src/thing.ts", "export const a = 1;\n");
+    expect(keel(["gate"], repo.root).status).toBe(1);
   });
 
   it("approves a rule, and check stops warning about it", () => {
@@ -1280,5 +1334,576 @@ describe("doctor's budget breaches", () => {
     expect(run.stdout).toContain("! marks p95 over budget");
     expect(run.stdout).toContain("cold");
     expect(run.stdout).toContain("fix if it persists warm");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// keel doctor --reset-tdd
+// ---------------------------------------------------------------------------
+
+interface StoredExpectation {
+  readonly writtenAt: number;
+  readonly redObservedAt: number | null;
+  readonly failingTests: readonly string[];
+}
+
+interface StoredBranch {
+  readonly expectations: Readonly<Record<string, StoredExpectation>>;
+  readonly implemented: readonly string[];
+}
+
+/**
+ * Seed the observed-RED ledger by writing the snapshot the module reads.
+ *
+ * A real file in a real repository, in the format `src/tdd/state.ts` defines —
+ * the same shape the PostToolUse hook leaves behind after a developer writes a
+ * test and watches it fail. Driving four hook invocations to produce it would
+ * assert the hook, not the flag.
+ */
+function seedTddState(target: TempRepo, branches: Readonly<Record<string, StoredBranch>>): void {
+  target.write(".keel/tdd-state.json", `${JSON.stringify({ version: 1, branches }, null, 2)}\n`);
+}
+
+function storedBranches(target: TempRepo): string[] {
+  const raw = JSON.parse(readFileSync(join(target.root, ".keel", "tdd-state.json"), "utf8")) as {
+    branches: Record<string, unknown>;
+  };
+  return Object.keys(raw.branches);
+}
+
+const RED: StoredExpectation = { writtenAt: 1000, redObservedAt: 2000, failingTests: ["earned it"] };
+const NOT_RED: StoredExpectation = { writtenAt: 5000, redObservedAt: null, failingTests: [] };
+
+describe("doctor --reset-tdd", () => {
+  let branch: string;
+
+  beforeEach(() => {
+    keel(["init"], repo.root);
+    branch = repo.git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+    seedTddState(repo, {
+      [branch]: {
+        expectations: { "src/a.test.ts": RED, "src/b.test.ts": NOT_RED },
+        implemented: ["src/a.ts#a"],
+      },
+      stale: { expectations: { "src/c.test.ts": RED }, implemented: [] },
+    });
+  });
+
+  it("exists at all — `state.ts` named this flag before it did", () => {
+    // `writeState` and `clearBranch` had no production caller, and their doc
+    // comments pointed at a `keel doctor --reset-tdd` that did not exist.
+    expect(keel(["help"], repo.root).stdout).toContain("--reset-tdd");
+    expect(keel(["doctor", "--reset-tdd"], repo.root).status).toBe(0);
+  });
+
+  it("clears every branch, and says how many it affected", () => {
+    const run = keel(["doctor", "--reset-tdd"], repo.root);
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain("TDD ledger reset");
+    expect(run.stdout).toContain("2 branches");
+    expect(run.stdout).toContain("3 test files");
+    expect(storedBranches(repo)).toEqual([]);
+  });
+
+  it("does not do it silently — deleting a RED re-blocks the next new export", () => {
+    const run = keel(["doctor", "--reset-tdd"], repo.root);
+    // Two of the three had a valid observed RED (`stale` and the current branch).
+    expect(run.stdout).toContain("valid observed RED");
+    expect(run.stdout).toContain("earned again");
+    expect(run.stdout).toContain("watch it fail before implementing");
+  });
+
+  it("clears one named branch and leaves the rest alone", () => {
+    const run = keel(["doctor", "--reset-tdd", "stale"], repo.root);
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain("cleared `stale`");
+    expect(keel(["doctor", "--json"], repo.root).status).toBe(0);
+
+    // The current branch's expectations survive, and doctor still reports them.
+    const after = keel(["doctor"], repo.root).stdout;
+    expect(after).toContain("src/a.test.ts");
+    expect(after).toContain("red observed");
+  });
+
+  it("accepts the --reset-tdd=<branch> spelling too", () => {
+    expect(keel(["doctor", "--reset-tdd=stale"], repo.root).stdout).toContain("cleared `stale`");
+  });
+
+  it("says so when the named branch had nothing recorded", () => {
+    const run = keel(["doctor", "--reset-tdd", "never-existed"], repo.root);
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain("nothing recorded");
+    expect(storedBranches(repo).sort()).toEqual([branch, "stale"].sort());
+  });
+
+  it("reports the reset in --json rather than only on the terminal", () => {
+    const parsed = JSON.parse(keel(["doctor", "--reset-tdd", "--json"], repo.root).stdout) as {
+      tddReset: { branch: string | null; branches: number; expectations: number; observedRed: number };
+    };
+    expect(parsed.tddReset).toEqual({
+      branch: null,
+      branches: 2,
+      expectations: 3,
+      observedRed: 2,
+    });
+  });
+
+  it("is never implied by a plain `keel doctor`", () => {
+    // Reporting on the ledger must not be a way to destroy it.
+    keel(["doctor"], repo.root);
+    keel(["doctor", "--json"], repo.root);
+    expect(storedBranches(repo).sort()).toEqual([branch, "stale"].sort());
+    expect(JSON.parse(keel(["doctor", "--json"], repo.root).stdout)).toHaveProperty("tddReset", null);
+  });
+
+  it("drops the journal with the snapshot, so cleared records cannot come back", () => {
+    repo.write(
+      ".keel/tdd-state.log",
+      `${JSON.stringify({ kind: "red", branch, files: ["src/d.test.ts"], at: 7000, failingTests: [] })}\n`,
+    );
+    keel(["doctor", "--reset-tdd"], repo.root);
+    expect(existsSync(join(repo.root, ".keel", "tdd-state.log"))).toBe(false);
+    expect(keel(["doctor"], repo.root).stdout).toContain("no test expectations recorded");
+  });
+
+  it("rejects an empty value, and names both ways to spell it", () => {
+    const run = keel(["doctor", "--reset-tdd="], repo.root);
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("empty value");
+    expect(run.stderr).toContain("drop the `=`");
+    expect(storedBranches(repo)).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// keel init writes every section it reads
+// ---------------------------------------------------------------------------
+
+describe("init writes the whole config", () => {
+  beforeEach(() => {
+    repo.write("package.json", JSON.stringify({ name: "demo" }));
+    keel(["init"], repo.root);
+  });
+
+  const generated = (): string => readFileSync(join(repo.root, "keel.config.yaml"), "utf8");
+
+  it("emits all ten sections, not six", () => {
+    // It wrote version, repo, tracks, router, standards, tdd and telemetry, and
+    // left upstream, display, spec and mutation undiscoverable.
+    const top = new Set(
+      generated()
+        .split("\n")
+        .filter((l) => /^[a-z_]+:/.test(l))
+        .map((l) => l.slice(0, l.indexOf(":"))),
+    );
+    expect([...top].sort()).toEqual(
+      [
+        "display",
+        "mutation",
+        "repo",
+        "router",
+        "spec",
+        "standards",
+        "tdd",
+        "telemetry",
+        "tracks",
+        "upstream",
+        "version",
+      ].sort(),
+    );
+  });
+
+  it("emits the fields that were missing from the sections it did write", () => {
+    const text = generated();
+    for (const key of [
+      "standard_max_files:",
+      "standard_max_lines:",
+      "package_roots:",
+      "dirs:",
+      "test_globs:",
+      "test_command:",
+    ]) {
+      expect(text, key).toContain(key);
+    }
+  });
+
+  it("makes `mutation.test_command` discoverable somewhere other than an error", () => {
+    expect(generated()).toContain("test_command");
+    expect(generated()).toContain("Detected from the repo when empty");
+  });
+
+  it("explains every knob it writes — a config nobody understands is one nobody tunes", () => {
+    const text = generated();
+    for (const comment of [
+      "# Any change touching these is always full track.",
+      "# Past either of these a change is full track on size alone",
+      "# Monorepo layout",
+      "# Where packs are looked for",
+      "# What counts as a test file",
+      "# Superpowers skills Keel switches on",
+      "# Formatting past this budget is dropped",
+      "# Root of the OpenSpec working tree.",
+      "# Floor for killed/total on changed lines",
+    ]) {
+      expect(text, comment).toContain(comment);
+    }
+  });
+
+  it("writes the values Keel actually falls back to, so the file cannot lie", () => {
+    // The scaffold is generated from `defaultConfig`, so a default that moves in
+    // one place and not the other fails here rather than misleading a reader.
+    const parsed = validateConfig(parseYaml(generated()));
+    expect(parsed.ok, parsed.ok ? "" : JSON.stringify(parsed.error)).toBe(true);
+    if (!parsed.ok) return;
+
+    const expected = defaultConfig(parsed.value.repo.name, parsed.value.repo.languages);
+    expect(parsed.value).toEqual({
+      ...expected,
+      // The one deliberate departure: the scaffold seeds force-full paths, which
+      // default to empty because Keel cannot guess a repository's danger zones.
+      router: { ...expected.router, force_full_globs: parsed.value.router.force_full_globs },
+    });
+    expect(parsed.value.router.force_full_globs).toContain("**/migrations/**");
+  });
+
+  it("still passes keel check unchanged", () => {
+    const run = keel(["check"], repo.root);
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain("keel.config.yaml valid");
+  });
+
+  it("is still byte-identical on a second and third run", () => {
+    const first = generated();
+    keel(["init"], repo.root);
+    keel(["init"], repo.root);
+    expect(generated()).toBe(first);
+  });
+
+  it("still keeps a hand-edited config, larger file or not", () => {
+    repo.write("keel.config.yaml", `${generated()}\n# my note\n`);
+    keel(["init"], repo.root);
+    expect(generated()).toContain("# my note");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The untrusted path, from a consumer repository with no machine key
+// ---------------------------------------------------------------------------
+
+/**
+ * Keel is its own plugin, so in this repository `pluginRoot === repoRoot` and
+ * `isPluginPack` treats `standards/` as shipped-with-Keel. Its own CI therefore
+ * only ever exercised the *trusted* path, which is exactly how "`keel gate`
+ * fails every consumer build with advice a runner cannot take" survived a
+ * review pass. These tests are consumer-shaped on both axes that matter: a repo
+ * that is not the plugin root, and a `KEEL_HOME` with no machine key in it, so
+ * no approval can exist and none can be inherited from the developer running
+ * the suite.
+ */
+describe("a consumer repository, with no machine key of its own", () => {
+  let home: string;
+
+  const PACK = "house-rules";
+
+  const consumerEnv = (): Record<string, string> => ({ KEEL_HOME: home });
+
+  const writePack = (rule: string): void => {
+    repo.write(
+      `standards/${PACK}/standard.yaml`,
+      [
+        `name: ${PACK}`,
+        "owner: local",
+        "mode: gate",
+        "severity: high",
+        "languages: [typescript]",
+        'applies_to: ["src/**/*.ts"]',
+        "description: A rule this repository ships and this checkout has not approved.",
+        "",
+      ].join("\n"),
+    );
+    repo.write(`standards/${PACK}/rule.ts`, rule);
+  };
+
+  const FIRES_ON_BANNED = [
+    "export default function rule(context) {",
+    "  const out = [];",
+    "  context.source.split('\\n').forEach((line, i) => {",
+    "    if (line.includes('BANNED')) {",
+    "      out.push({ line: i + 1, message: 'banned token', fix: 'remove it' });",
+    "    }",
+    "  });",
+    "  return out;",
+    "}",
+    "",
+  ].join("\n");
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "keel-home-"));
+    keel(["init"], repo.root, consumerEnv());
+    writePack(FIRES_ON_BANNED);
+    repo.commit("consumer repo with its own pack");
+    repo.write("src/thing.ts", "export const a = 1;\n");
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("is genuinely consumer-shaped: not the plugin root, and no key on this machine", () => {
+    // Both halves of the premise. Without them the assertions below pass for
+    // the wrong reason — the pack would be plugin-shipped, or an approval the
+    // developer made years ago would already be on disk.
+    expect(repo.root).not.toBe(PLUGIN_ROOT);
+    expect(existsSync(join(home, "machine-key"))).toBe(false);
+    expect(existsSync(join(repo.root, ".keel", "trust.json"))).toBe(false);
+    const parsed = JSON.parse(keel(["trust", "list", "--json"], repo.root, consumerEnv()).stdout) as {
+      packs: Array<{ pack: string; trusted: boolean }>;
+    };
+    expect(parsed.packs).toEqual([{ pack: PACK, trusted: false }]);
+  });
+
+  it("fails the gate, and names the command that fixes it", () => {
+    const run = keel(["gate"], repo.root, consumerEnv());
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain("did not run");
+    expect(run.stdout).toContain(`keel trust add ${PACK}`);
+  });
+
+  it("the named fix works, and creates the key it signs with", () => {
+    // Every error message in this codebase names the fix; this is the assertion
+    // that the fix, followed exactly, actually clears the failure.
+    const add = keel(["trust", "add", PACK], repo.root, consumerEnv());
+    expect(add.status).toBe(0);
+    expect(add.stdout).toContain("approved");
+    expect(existsSync(join(home, "machine-key"))).toBe(true);
+
+    const run = keel(["gate"], repo.root, consumerEnv());
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain("no blocking findings");
+  });
+
+  it("runs the rule under --trust-repo-rules, with no approval anywhere", () => {
+    // CI cannot approve anything and cannot keep a signing key. Without this
+    // flag the two fixes cancel and every consumer build is permanently red.
+    const run = keel(["gate", "--trust-repo-rules"], repo.root, consumerEnv());
+    expect(run.status).toBe(0);
+    expect(run.stdout).not.toContain("did not run");
+
+    // And it granted nothing on the way through: no approval was recorded, so
+    // the next run without the flag is untrusted again. The flag is a decision
+    // made per invocation, not a door left open.
+    expect(existsSync(join(repo.root, ".keel", "trust.json"))).toBe(false);
+    expect(keel(["gate"], repo.root, consumerEnv()).status).toBe(1);
+  });
+
+  it("still blocks a real violation under --trust-repo-rules", () => {
+    // The flag must not become a way to make the gates stop firing.
+    repo.write("src/thing.ts", "export const bad = 'BANNED';\n");
+    const run = keel(["gate", "--trust-repo-rules"], repo.root, consumerEnv());
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain("banned token");
+    expect(run.stdout).toContain("fix: remove it");
+  });
+
+  it("still blocks a real violation once approved the ordinary way", () => {
+    keel(["trust", "add", PACK], repo.root, consumerEnv());
+    repo.write("src/thing.ts", "export const bad = 'BANNED';\n");
+    const run = keel(["gate"], repo.root, consumerEnv());
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain("banned token");
+  });
+
+  it("re-blocks when the approved rule is edited, since trust is in the bytes", () => {
+    keel(["trust", "add", PACK], repo.root, consumerEnv());
+    expect(keel(["gate"], repo.root, consumerEnv()).status).toBe(0);
+
+    writePack(FIRES_ON_BANNED.replace("banned token", "banned token (v2)"));
+    const run = keel(["gate"], repo.root, consumerEnv());
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain("did not run");
+  });
+
+  it("does not accept an approval another machine wrote", () => {
+    // The interesting hostile case: a repository that commits its own
+    // `.keel/trust.json`. Approve under one home, then arrive with another.
+    keel(["trust", "add", PACK], repo.root, consumerEnv());
+    const other = mkdtempSync(join(tmpdir(), "keel-home-other-"));
+    try {
+      const run = keel(["gate"], repo.root, { KEEL_HOME: other });
+      expect(run.status).toBe(1);
+      expect(run.stdout).toContain("did not run");
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it("records `untrusted` in telemetry, not `error`", () => {
+    // `gateStats` counts every gate event as a run and only `fail` as a failure,
+    // so folding these into `error` made `keel doctor` say "has never fired in
+    // 20 runs — consider deleting it" about a pack that was never allowed to run.
+    keel(["gate"], repo.root, consumerEnv());
+    const events = readSpooledEvents(repo);
+    const mine = events.filter((e) => e.kind === "gate" && e.pack === PACK);
+    expect(mine).not.toHaveLength(0);
+    expect(mine.map((e) => e.result)).toContain("untrusted");
+    expect(mine.map((e) => e.result)).not.toContain("error");
+  });
+
+  it("still records `error` for a rule that genuinely breaks", () => {
+    // The distinction is only worth anything if `error` still means something.
+    writePack("export default () => { throw new Error('rule exploded'); };\n");
+    keel(["trust", "add", PACK], repo.root, consumerEnv());
+    keel(["gate"], repo.root, consumerEnv());
+
+    const results = readSpooledEvents(repo)
+      .filter((e) => e.kind === "gate" && e.pack === PACK)
+      .map((e) => e.result);
+    expect(results).toContain("error");
+    expect(results).not.toContain("untrusted");
+  });
+
+  it("records `pass` for a pack that ran and found nothing", () => {
+    keel(["trust", "add", PACK], repo.root, consumerEnv());
+    keel(["gate"], repo.root, consumerEnv());
+    const results = readSpooledEvents(repo)
+      .filter((e) => e.kind === "gate" && e.pack === PACK)
+      .map((e) => e.result);
+    expect(results).toContain("pass");
+  });
+});
+
+interface SpooledEvent {
+  readonly kind: string;
+  readonly pack?: string;
+  readonly result?: string;
+}
+
+/** Every telemetry event on disk, oldest file first. */
+function readSpooledEvents(target: TempRepo): SpooledEvent[] {
+  const dir = join(target.root, ".keel", "telemetry");
+  if (!existsSync(dir)) return [];
+  const out: SpooledEvent[] = [];
+  for (const name of readdirSync(dir).sort()) {
+    if (!name.startsWith("events-") || !name.endsWith(".jsonl")) continue;
+    for (const raw of readFileSync(join(dir, name), "utf8").split("\n")) {
+      if (raw.trim() === "") continue;
+      out.push(JSON.parse(raw) as SpooledEvent);
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// keel gate --against reads one side, and says which
+// ---------------------------------------------------------------------------
+
+describe("gate --against reads the same side it measures", () => {
+  beforeEach(() => {
+    keel(["init"], repo.root);
+    repo.write(
+      "standards/no-banned/standard.yaml",
+      [
+        "name: no-banned",
+        "owner: local",
+        "mode: gate",
+        "severity: high",
+        "languages: [typescript]",
+        'applies_to: ["src/**/*.ts"]',
+        "description: The token BANNED does not belong in shipped source.",
+        "",
+      ].join("\n"),
+    );
+    repo.write(
+      "standards/no-banned/rule.ts",
+      [
+        "export default function rule(context) {",
+        "  const out = [];",
+        "  context.source.split('\\n').forEach((line, i) => {",
+        "    if (line.includes('BANNED')) {",
+        "      out.push({ line: i + 1, message: 'banned token', fix: 'remove it' });",
+        "    }",
+        "  });",
+        "  return out;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    repo.write("src/thing.ts", "export const a = 1;\n");
+    repo.commit("baseline");
+    expect(keel(["trust", "add", "no-banned"], repo.root).status).toBe(0);
+  });
+
+  /** HEAD adds the violation on line 2; the working tree then shifts it to 3. */
+  const shiftedWorkingTree = (): void => {
+    repo.write("src/thing.ts", 'export const a = 1;\nexport const b = "BANNED";\n');
+    repo.commit("add violation");
+    repo.write(
+      "src/thing.ts",
+      'export const zero = 0;\nexport const a = 1;\nexport const b = "BANNED";\n',
+    );
+  };
+
+  it("finds the violation at HEAD's line number, not the working tree's", () => {
+    // The changed-line set comes from `<ref>...HEAD`, so line 2 is the only line
+    // a finding may land on. Reading the text from the working tree put BANNED
+    // on line 3, which the diff-only filter then dropped — a false green, and
+    // the sort of thing that only shows up when the tree is dirty.
+    shiftedWorkingTree();
+    const run = keel(["gate", "--against", "HEAD~1"], repo.root);
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain("src/thing.ts:2");
+    expect(run.stdout).toContain("banned token");
+  });
+
+  it("says which side it read", () => {
+    shiftedWorkingTree();
+    const run = keel(["gate", "--against", "HEAD~1"], repo.root);
+    expect(run.stdout).toContain("read at HEAD");
+    expect(run.stdout).toContain("HEAD~1...HEAD");
+  });
+
+  it("names the files whose working-tree copy it did not judge", () => {
+    shiftedWorkingTree();
+    const run = keel(["gate", "--against", "HEAD~1"], repo.root);
+    expect(run.stdout).toContain("uncommitted changes");
+    expect(run.stdout).toContain("src/thing.ts");
+    expect(run.stdout).toContain("keel gate` with no --against");
+  });
+
+  it("says nothing about uncommitted work on a clean checkout, which is CI", () => {
+    repo.write("src/thing.ts", 'export const a = 1;\nexport const b = "fine";\n');
+    repo.commit("clean change");
+    const run = keel(["gate", "--against", "HEAD~1"], repo.root);
+    expect(run.status).toBe(0);
+    expect(run.stdout).not.toContain("uncommitted changes");
+    expect(run.stdout).toContain("read at HEAD");
+  });
+
+  it("carries both facts into --json", () => {
+    shiftedWorkingTree();
+    const parsed = JSON.parse(keel(["gate", "--against", "HEAD~1", "--json"], repo.root).stdout) as {
+      contentsAt: string;
+      uncommitted: string[];
+      blocking: Array<{ line: number; path: string }>;
+    };
+    expect(parsed.contentsAt).toBe("HEAD");
+    expect(parsed.uncommitted).toContain("src/thing.ts");
+    expect(parsed.blocking[0]?.line).toBe(2);
+  });
+
+  it("still reads the working tree when no base ref is given", () => {
+    // The hook's comparison, and the one a developer mid-edit needs: there the
+    // working tree *is* the right-hand side of the diff.
+    repo.write("src/thing.ts", 'export const a = 1;\nexport const b = "BANNED";\n');
+    const run = keel(["gate"], repo.root);
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain("src/thing.ts:2");
+
+    const parsed = JSON.parse(keel(["gate", "--json"], repo.root).stdout) as {
+      contentsAt: string;
+      uncommitted: string[];
+    };
+    expect(parsed.contentsAt).toBe("working tree");
+    expect(parsed.uncommitted).toEqual([]);
   });
 });

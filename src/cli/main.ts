@@ -185,8 +185,15 @@ async function main(): Promise<number> {
     case "check":
       return check(repoRoot, plugin, { json: flagBool(args, "json") });
 
-    case "doctor":
-      return doctor(repoRoot, plugin, { json: flagBool(args, "json") });
+    case "doctor": {
+      // `--reset-tdd` is meaningful bare (every branch) and with a value (one
+      // branch), so presence — not truthiness — is what selects the reset.
+      const resetTdd = flagString(args, "reset-tdd");
+      return doctor(repoRoot, plugin, {
+        json: flagBool(args, "json"),
+        ...(flagPresent(args, "reset-tdd") ? { resetTdd: resetTdd ?? true } : {}),
+      });
+    }
 
     case "route": {
       const requested = flagString(args, "track");

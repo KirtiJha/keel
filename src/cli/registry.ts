@@ -18,6 +18,16 @@ export interface FlagSpec {
   readonly kind: FlagKind;
   /** Metavariable shown in help for a value flag, e.g. `<ref>`. */
   readonly value?: string;
+  /**
+   * A `string` flag that is also meaningful bare, e.g. `--reset-tdd` (every
+   * branch) versus `--reset-tdd main` (one branch).
+   *
+   * It stays `kind: "string"` so the parser still consumes the following token —
+   * that decision is made before the command is known — and only the validator
+   * relaxes: a bare use is accepted instead of "needs a value". An explicitly
+   * empty value is still rejected, because `--reset-tdd=` reads as a typo.
+   */
+  readonly optionalValue?: boolean;
   readonly help: string;
 }
 
@@ -75,7 +85,16 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "doctor",
     summary: "what is active, and how fast it runs",
     subcommands: [],
-    flags: [JSON_FLAG],
+    flags: [
+      JSON_FLAG,
+      {
+        name: "reset-tdd",
+        kind: "string",
+        optionalValue: true,
+        value: "[<branch>]",
+        help: "clear the observed-RED ledger: every branch, or one named branch",
+      },
+    ],
   },
   {
     name: "route",
@@ -306,14 +325,20 @@ export function validateFlags(args: ParsedArgs, spec: CommandSpec): FlagProblem[
 
     if (known.kind === "string") {
       if (value === true) {
-        problems.push({
-          message: `\`${typed}\` needs a value`,
-          fix: `pass one, e.g. \`${typed} ${known.value ?? "<value>"}\``,
-        });
+        // `optionalValue` flags mean something on their own; the rest do not.
+        if (known.optionalValue !== true) {
+          problems.push({
+            message: `\`${typed}\` needs a value`,
+            fix: `pass one, e.g. \`${typed} ${known.value ?? "<value>"}\``,
+          });
+        }
       } else if (value === "") {
         problems.push({
           message: `\`${typed}\` was given an empty value`,
-          fix: `pass a real one, e.g. \`${typed} ${known.value ?? "<value>"}\``,
+          fix:
+            known.optionalValue === true
+              ? `name one, e.g. \`${typed} main\`, or drop the \`=\` to use \`${typed}\` on its own`
+              : `pass a real one, e.g. \`${typed} ${known.value ?? "<value>"}\``,
         });
       }
       continue;

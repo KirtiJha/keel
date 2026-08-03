@@ -374,6 +374,15 @@ by the router, overridable per turn."
 **Mechanism:** `effortLevel` in settings.json, accepting
 `low | medium | high | xhigh`.
 
+**Two enums, deliberately different.** `EFFORT_LEVELS` in
+`src/shared/settings.ts` is Claude Code's field and carries all four values;
+`EFFORTS` in `src/shared/config.ts` is what `tracks.<track>.effort` accepts and
+carries three — `xhigh` is not one of them, and `keel check` rejects it with
+`tracks.full.effort: Invalid option`. Three tracks map to three levels, so a
+fourth would have no track to belong to. The README documented the wider list
+once and sent people to write a config that fails validation; if a use for
+`xhigh` appears, widening `EFFORTS` is the change, not widening the docs.
+
 **Two decisions on top of it:**
 
 1. **Local scope, not project.** The level follows *this change's* track, which

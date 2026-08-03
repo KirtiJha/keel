@@ -52,17 +52,32 @@ function ensureGitignore(root: string): "added" | "present" | "created" {
   return "added";
 }
 
+/** A YAML block sequence of quoted strings, at one indent level. */
+function items(values: readonly string[], indent = "    "): string[] {
+  return values.map((value) => `${indent}- ${JSON.stringify(value)}`);
+}
+
 function writeConfig(root: string, force: boolean): "created" | "kept" {
   const path = configPath(root);
   if (isFile(path) && !force) return "kept";
 
   const languages = detectLanguages(root);
   const name = basename(root);
+  // Values come from the canonical defaults rather than being retyped here, so
+  // the scaffold cannot drift from what Keel actually falls back to. It wrote 6
+  // of 10 sections for a while, and `mutation.test_command` was discoverable
+  // only from the error message you got when mutation testing could not find a
+  // test command.
+  const base = defaultConfig(name, languages);
 
   // Written by hand rather than serialised so the file carries comments
   // explaining each knob — a config nobody understands is a config nobody tunes.
   const yaml = [
     "# Keel configuration. Schema: .keel/keel.config.schema.json",
+    "#",
+    "# Every section Keel reads is written out at its default, with the comment",
+    "# that explains the knob. Deleting a field is safe: it falls back to exactly",
+    "# the value shown here.",
     "version: 1",
     "",
     "repo:",
@@ -81,27 +96,77 @@ function writeConfig(root: string, force: boolean): "created" | "kept" {
     '    - "**/migrations/**"',
     '    - "**/auth/**"',
     '    - "openapi/**"',
-    "  quick_max_files: 1",
-    "  quick_max_lines: 50",
+    "  # At or under both of these, a change may stay on the quick track.",
+    `  quick_max_files: ${base.router.quick_max_files}`,
+    `  quick_max_lines: ${base.router.quick_max_lines}`,
+    "  # Past either of these a change is full track on size alone. Deliberately",
+    "  # high: the common large change is a rename or a formatting sweep.",
+    `  standard_max_files: ${base.router.standard_max_files}`,
+    `  standard_max_lines: ${base.router.standard_max_lines}`,
     "  # More external callers than this escalates off the quick track.",
-    "  escalate_caller_threshold: 5",
+    `  escalate_caller_threshold: ${base.router.escalate_caller_threshold}`,
+    "  # Monorepo layout: a change spanning two of these roots is cross-package.",
+    "  package_roots:",
+    ...items(base.router.package_roots),
     "",
     "standards:",
-    '  packs_ref: "keel-standards@0.1.0"',
+    `  packs_ref: ${JSON.stringify(base.standards.packs_ref)}`,
     "  # Pack names to switch off in this repo.",
     "  disabled: []",
+    "  # Where packs are looked for, relative to this repository. A rule found",
+    "  # here is repo-local code: it runs only after `keel trust add <pack>`.",
+    "  dirs:",
+    ...items(base.standards.dirs),
     "",
     "tdd:",
     "  enabled: true",
     "  # Integration TDD. Off until a harness exists; see keel-plan.md.",
     "  outer_loop: false",
+    "  # Files no TDD gate applies to.",
     "  exempt_globs:",
     '    - "**/*.config.ts"',
     '    - "**/migrations/**"',
+    "  # What counts as a test file, for the pairing and observed-RED gates.",
+    "  test_globs:",
+    ...items(base.tdd.test_globs),
     "",
     "telemetry:",
+    "  # `file` spools to `path` and never leaves this machine; `none` records",
+    "  # nothing, and the gate hit rates in `keel doctor` go with it.",
     "  sink: file",
-    '  path: ".keel/telemetry"',
+    `  path: ${JSON.stringify(base.telemetry.path)}`,
+    "",
+    "# Superpowers skills Keel switches on, and any it must leave off.",
+    "upstream:",
+    "  enabled_skills:",
+    ...items(base.upstream.enabled_skills),
+    "  disabled_skills: []",
+    "",
+    "display:",
+    "  enabled: true",
+    "  # Formatting past this budget is dropped rather than delaying output.",
+    `  budget_ms: ${base.display.budget_ms}`,
+    "",
+    "spec:",
+    "  # Root of the OpenSpec working tree.",
+    `  dir: ${base.spec.dir}`,
+    "  # A verbose spec is a defect: cap the lines per change.",
+    `  max_lines: ${base.spec.max_lines}`,
+    "  # Optional EARS acceptance criteria, full track only. Off until tried.",
+    "  ears: false",
+    "  # A full-track change needs a proposal before implementation.",
+    "  require_proposal_on_full: true",
+    "",
+    "mutation:",
+    "  enabled: true",
+    "  # Floor for killed/total on changed lines. Ratchets quarterly.",
+    `  min_score: ${base.mutation.min_score}`,
+    "  # Cap per run: mutation is slow and CI is not free.",
+    `  max_mutants: ${base.mutation.max_mutants}`,
+    "  # Per-mutant test timeout.",
+    `  timeout_ms: ${base.mutation.timeout_ms}`,
+    '  # How to run the tests, e.g. "npm test". Detected from the repo when empty.',
+    '  test_command: ""',
     "",
   ].join("\n");
 

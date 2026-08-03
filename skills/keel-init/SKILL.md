@@ -9,11 +9,19 @@ keel-phases: [classification]
 ## Setting up
 
 ```
-keel init      # writes keel.config.yaml + CLAUDE.md, idempotent
-keel check     # validates config, packs, phase ownership, upstream pins
-keel gotchas   # review candidates one at a time; nothing is written unconfirmed
-keel doctor    # what is active and how fast it runs
+keel init         # writes keel.config.yaml + CLAUDE.md, idempotent
+keel check        # validates config, packs, phase ownership, upstream pins
+keel trust list   # repo-local pack rules awaiting approval — they do not run until then
+keel gotchas      # review candidates one at a time; nothing is written unconfirmed
+keel doctor       # what is active and how fast it runs
 ```
+
+If this repository carries its own packs under `standards/`, run `keel trust
+list` before assuming the gates are on. A rule that arrives in a checkout is
+unsandboxed code, so it runs only after someone reads it and runs `keel trust
+add <pack>`; until then it is reported as *did not run*, never as *passed*. In
+CI, `keel gate --trust-repo-rules` is the equivalent — see the `keel-standards`
+skill.
 
 `keel init` is safe to re-run. It only rewrites between the `<!-- keel:begin -->`
 and `<!-- keel:end -->` markers in CLAUDE.md, so anything a human wrote outside
@@ -87,10 +95,13 @@ content-hashed and rebuilds itself.
 
 ## Upstream
 
-`upstream.lock` pins Superpowers `6.2.0` (planning, implementation) and OpenSpec
-`1.7.0` (design, spec-conformance). Spec Kit `0.15.1` is pinned as a *pattern
-source*: we took two ideas from it and do not install it, because its commands
-would claim phases OpenSpec and Superpowers already own.
+`upstream.lock` pins four things, two of them installed: Superpowers `6.2.0`
+(planning, implementation) and OpenSpec `1.7.0` (design, spec-conformance). Spec
+Kit `0.15.1` and Superspec `0.1.11` are pinned as *pattern sources* — ideas were
+taken from them and neither is installed, because their commands would claim
+phases OpenSpec and Superpowers already own. Superspec's identification is
+unconfirmed and the lock file says so; it installs nothing, so a wrong pin costs
+a wrong citation and nothing else.
 
 `keel check` rejects moving versions and fails if two things claim one phase.
 

@@ -66,6 +66,15 @@ A proposal counts as merged when its frontmatter says `status: applied`, or when
 every task in it is checked off. Archive it by moving it under
 `openspec/changes/archive/`, or with OpenSpec's archive command.
 
+The archive rule only fires on the default branch. Locally that is detected from
+the branch name (`main`, `master`, `trunk`); in CI it usually is not, because
+`actions/checkout` leaves a detached HEAD and `git rev-parse --abbrev-ref HEAD`
+then answers `HEAD` — so pass `--default-branch`, as Keel's own CI does when
+`github.ref` is `refs/heads/main`.
+Everywhere else the size cap and the proposal requirement still run and the
+archive rule does not, because an unarchived proposal on a feature branch is just
+work in progress.
+
 ### 3. Cap the spec at ~250 lines per change
 
 Counted across every markdown file in the change. Over the cap warns; far over

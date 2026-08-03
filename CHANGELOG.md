@@ -7,6 +7,230 @@ semver.
 
 ## [Unreleased]
 
+### Security
+
+**Upgrading: a repo-local pack rule will not run until someone approves it.**
+If your repository carries its own `standards/<name>/rule.ts` or `rule.py`, that
+rule stops running on this release — in the PostToolUse hook and in `keel gate`
+alike — until a human runs `keel trust add <name>` in that checkout. Nothing
+about your config changes and nothing errors; the rule simply has nothing to
+say. Run `keel trust list` to see what is waiting, read the file, then approve
+it. In CI, pass `--trust-repo-rules` instead (see below). Packs that ship inside
+the plugin are trusted by construction and are unaffected.
+
+- **A pack rule found in the repository being edited is unsandboxed code, and
+  running it is now a decision.** `rule.ts` / `rule.py` are imported and executed
+  in-process by the PostToolUse hook with the full privileges of the developer's
+  session: any file, any subprocess, the network. Nothing about the pack format
+  sandboxes them, and `standards.dirs` defaults to `["standards"]` — so cloning
+  an untrusted repository, opening it, and letting Claude edit one matching file
+  was enough to execute that repository's code. No config, no prompt, no notice.
+  Approval is keyed to the **exact bytes** of the rule file, so editing an
+  approved rule invalidates it; trust is in the content, never in the path. Each
+  record carries an HMAC over (repo root, pack, rule path, rule hash) under a
+  random key held outside every repository, in `KEEL_HOME` or
+  `~/.keel/machine-key` — a hostile repo can commit a `.keel/trust.json`, but a
+  self-approving record does not verify and the rule does not run. Every
+  negative answer degrades to "this pack does not run and says so", never to
+  "this edit is blocked" (constraint 0.3). Full reasoning in
+  `src/standards/trust.ts`.
+- **An untrusted pack is reported as *did not run*, never as *passed*.**
+  `keel gate` exits non-zero on one, and so does `keel trust list`; the
+  PostToolUse hook used to print "checks passed" for three different outcomes —
+  ran clean, crashed, never approved — so a pack author iterating in Claude Code
+  saw the same two words on every save with no way to tell their rule was dead.
+- **`--trust-repo-rules` on `keel gate`, because a runner cannot approve
+  anything.** The two fixes above cancelled out in CI: an approval is signed
+  under a machine key that does not survive the runner, so `keel gate` reported
+  every repo-local pack as unapproved, exited 1, and advised a machine to run
+  `keel trust add`. The gates were reachable from CI in name only. The flag opts
+  out, and the reasoning is that approval is meaningless where it would be
+  granted — a CI job has already checked the repository out and is already
+  running its code (`npm ci` runs its install scripts, `npm test` runs its
+  tests), so a pack rule is not a new privilege there. On a developer's machine
+  it is, which is why this is not the default. It is a flag rather than a
+  `CI=true` sniff: environments set `CI` for many reasons, and a boundary that
+  disables itself on a variable someone else controls is not a boundary. This is
+  a choice a human makes once, visibly, in a workflow file — `.github/workflows/ci.yml`
+  is the worked example.
+- **Compiled rules carry a verified stamp** (`src/standards/rule-loader.ts`).
+  The transpile cache was keyed on `sha256(rule.ts)` and a cache *hit* was
+  decided by the file existing — the bytes were never checked against the source
+  they claimed to come from. So a repo could commit
+  `.keel/cache/packs/<pack>-<hash>.mjs`, and that artifact was imported while the
+  `rule.ts` a reviewer read was never compiled: the malicious code survived code
+  review by never being *in* the review. A truncated write had the mirror-image
+  effect, wedging a broken artifact under the key of a good source forever while
+  the hook still said "checks passed". An artifact now carries a first-line stamp
+  naming the source hash, the hash of its own body, and an HMAC over both under
+  the machine key; anything that does not verify is recompiled rather than
+  trusted, and writes go through a temp file and a rename so a half-written
+  artifact is never visible under the real name.
+- **The trust HMAC binds to the *canonical* repo root.** It bound to a root
+  `resolve()` had normalised but not canonicalised. `keel trust add` reaches the
+  root through `process.cwd()`, which the OS has already resolved; the hook
+  reaches it through whatever `cwd` Claude Code passes. Differ by a symlink —
+  macOS hands out `/tmp` for `/private/tmp` — and the MAC stops matching, the
+  gate silently stops running, and re-approving does not help, because the new
+  record is signed against the canonical root too. Unfixable, and visible only
+  under `KEEL_DEBUG`.
+- **Redaction reached the model.** It was wired into the debug log only — the one
+  channel that does *not* reach Claude — while the blocking reason fed straight
+  back to it was unprotected. Keel's own assertion-lint gate quotes the test
+  name, so a test named after a token leaked it with no custom pack involved. It
+  is now applied in `emitAndExit`, the single point every hook's output leaves
+  the process, for the same reason the fail-open contract lives there: no hook
+  can then forget. The CLI was fixed the same way a pass later — every write in
+  `src/cli/output.ts` goes through one of two functions, both of which redact,
+  because `keel gate --json` is exactly what a job pipes into a log or a PR
+  comment.
+- **Repo-supplied `guide.md` can no longer break out of its fence.** The fence
+  used a fixed delimiter and did not escape the body, so a guide containing the
+  closing tag landed its payload outside the fence, presented as Keel's own
+  words. The tag now carries a per-invocation nonce and the body is defanged.
+- **`isInsideRepo` is wired up.** It existed, documented as rejecting "`../`
+  escapes and absolute strays", with zero call sites; it now guards
+  `standards.dirs`, `telemetry.path` and `spec.dir`, and had a hole of its own —
+  the repo's own parent passed the check. `resolveConfiguredPath` also fell back
+  to the repo root when the *default* escaped, which a repo can arrange by
+  committing `standards` as a symlink: that made the whole repository a pack
+  search root and let an out-of-tree `guide.md` in through the back door.
+
+### Fixed — gates that were not gating
+
+The recurring shape across two review passes: a mechanism proven in isolation
+and assumed to be connected everywhere. Each item reproduced before it was
+fixed.
+
+- **Three of Keel's own files were invisible to Keel's own gates.**
+  `src/shared/glob.ts`, `tests/shared/paths.test.ts` and
+  `tests/display/format.test.ts` each contained a raw NUL byte where an escape
+  was intended. Git classifies such a file as binary and emits no hunk headers,
+  so `changedLines` returned an empty set and every finding on those files was
+  dropped — the standards gates, all four TDD gates and `keel mutate` could never
+  fire on them. In a tool whose second rule of the road is "diff-only, always",
+  three of its own files sitting outside every diff is the worst kind of quiet
+  failure. Every tracked file is text now.
+- **Hooks did not fail open, they blocked.** `changedLines` answered "git could
+  not tell us" with "every line is new", so the gates evaluated whole files and
+  blocked edits to committed, unmodified code when git was missing, when the
+  directory was not a repository, and — the case real users would have hit —
+  when the file was gitignored, so every edit to generated code blocked. It now
+  returns a discriminated result and callers report nothing when the answer is
+  unknown. Hooks also exited 1 on oversized stdin, and 1 means *non-blocking*, so
+  the guarantee was inverted at exactly the moment it mattered.
+- **`keel mutate` reported a perfect score when it could not run tests at all.**
+  Score 1, passed, exit 0 when no test command could be detected — so a repo
+  whose test script was renamed would post a perfect mutation score forever, in
+  the job standing in for coverage. "Nothing to mutate" (a docs change) and "the
+  instrument is broken" are now different answers, and a mostly-errored run
+  reports inconclusive rather than passing on the remainder. Separately, the gate
+  generated zero mutants on every PR: the file list came from `--against` while
+  the line set was hard-wired to HEAD, so a clean CI checkout produced a perfect
+  score without testing anything.
+- **`keel gate` exited 0 while printing "a dropped gate is not a passed gate".**
+  The hook's fail-open contract does not transfer to the CI surface: failing open
+  is right when someone is typing, and wrong when the job's whole purpose is to
+  notice that a rule stopped being enforced. Blocking findings, untrusted packs,
+  rule errors, budget drops and unknown diffs all fail the command now.
+- **Config strictness was only skin deep.** The README promises that an unknown
+  key is an error. Only the root object was strict, and every tuning knob a team
+  actually touches lives in a nested section: `router.quick_max_flies: 3`
+  validated clean and silently ran the default. Every section is strict now, and
+  the error names the section.
+- **The TDD state file cost more than the hook's own timeout.** `applyEntry`
+  deep-copied the whole expectations map per journal record, so folding N records
+  was O(N²), and the gate runner then read the state once per new exported symbol.
+  A 20-export edit against an 800-expectation snapshot and a 120 KB journal took
+  23.8 s locally and 40 s on a reviewer's machine, against a registered 30 s hook
+  timeout: Claude Code kills the hook, the TDD gate produces no verdict, and the
+  edit appears to hang. The fold now mutates an accumulator and materialises the
+  immutable state once, `readState` short-circuits when nothing is pending, and
+  the runner takes one ledger read. The same edit takes 765–970 ms — node start
+  plus the lazy `typescript` load, identical to the empty-state case. Folding
+  8,000 records went 17.4 s to under 300 ms.
+- **Concurrent compaction discarded committed TDD records.** Each write was
+  atomic; the read-fold-write *sequence* was not, so two overlapping compactions
+  clobbered each other and the loser's journal had already been unlinked. Eight
+  writers × 400 records kept 2,292 of 3,200. A lost RED means gate 3 blocks an
+  edit the developer already earned. Compaction now holds an exclusive lock with
+  a stale-lock timeout, rotates the journal to a fixed name before folding, and
+  deletes the rotated file only after the snapshot it produced is on disk: 3,200
+  of 3,200. (Before that, the file lost writes outright — eight concurrent hooks
+  kept 34 of 320 — which is what the snapshot-plus-journal design fixed.)
+- **Nothing ever pruned the TDD state.** `writeState` and `clearBranch` had no
+  callers, and both doc comments named `keel doctor --reset-tdd`, a flag that
+  does not exist and that the new argument validator now rejects. So the file
+  accumulated every test file on every branch ever used, which is what fed the
+  O(N²) cost above. Retention now lives in compaction: branches git no longer has
+  are dropped (skipped entirely, not guessed, when git cannot answer), then
+  global caps on branches, expectations and implemented symbols, allocated
+  round-robin so no branch starves the others. The current branch is never
+  dropped. A manual reset still wants a `--reset-tdd` flag on `doctor`; both
+  functions are exported and ready, only the CLI wiring is missing.
+- **The telemetry serialiser rewrote `untrusted` and `skipped` to `pass` on
+  disk** — the type was widened and the runtime allowlist was not, one file from
+  the comment explaining why that exact conflation must not happen. The allowlist
+  is a mapped object now, so omitting a member is a type error.
+- **A polyglot repo lost half its commands.** `detectCommands` is keyed by role
+  and the npm scripts overwrote the Python ones, so a TypeScript + Python repo
+  got a CLAUDE.md listing only `npm test`. The model would run it, see it pass,
+  and report a green suite having executed no Python tests — with
+  `languages: [typescript, python]` sitting beside it making the omission look
+  deliberate.
+- **Two properties could be deleted with the whole suite still green** (874 tests
+  at the time): the standards gate's fail-open path, and `keel mutate`'s
+  `--against` wiring — the latter reverted to the exact bug whose own comment
+  describes it. Both are the difference between a gate and a decoration, and
+  neither was guarded. `tests/hooks/gate-integrity.test.ts` kills those mutants
+  and four more now, all
+  driving the shipped bundles rather than the modules underneath — because every
+  one of these was previously "covered" at a layer that could not observe it. A
+  unit test of `redact()` says nothing about whether anything calls it.
+- Router and gate accuracy: body-only edits to `export const` and to class
+  methods read as signature changes; renames parsed from git's compressed
+  `{a => b}` form routed a file moved into a `force_full_globs` directory as
+  quick; untracked files counted a phantom trailing line, binaries counted as
+  lines, symlinks were analysed as copies of their target; Python mutation spans
+  used byte offsets as character offsets, so any non-ASCII on the line produced
+  an invalid mutant that was then scored as a kill; and size alone could never
+  reach the full track, so a 60-file, 9,000-line change routed like a three-file
+  one. Gate 2 caught nothing in Python — its test was named "blocks a Python test
+  that patches its own module" while asserting the opposite. Gate 3 blocked
+  correct TDD on the default JS layout. Gate 4 blocked tests that delegate to a
+  helper, and ignored the escape hatch its own message recommended.
+- **Silent failures that made process quietly evaporate are loud now.** An
+  `--against` ref that does not resolve was routing every change to quick with
+  exit 0 and an empty stderr — in CI that meant all process stopped applying and
+  nothing said so. `review record` coerced a non-numeric count to 0, silently
+  zeroing the project's headline metric. `route` ran on coerced defaults when the
+  config would not parse, so `force_full_globs` stopped applying with no warning.
+- **The Superpowers pin was decorative.** A marketplace added without a ref
+  tracks the default branch, so `version: "6.2.0"` was a comment. The install
+  command carries `#v6.2.0` now, an install command without its pin is a lock
+  error, and the installed version is read from the real manifest — so
+  `wrong-version` is reachable at all, where it previously could not be returned
+  under any circumstances.
+- **`agents/keel-reviewer.md` moved to `templates/agents/`.** Claude Code
+  auto-discovers `agents/` at plugin root, and plugin-shipped agents cannot carry
+  `permissionMode`, which this one sets and needs. It was therefore registered
+  twice, once invalidly. With the directory gone there is exactly one
+  registration: the copy `keel init` installs into `.claude/agents/`, where the
+  field is supported.
+- **`keel init` scaffolds the `upstream.lock` every "run `keel init`" message had
+  been promising**, with an empty `dependencies: {}` — guessing pins would be
+  worse than shipping none. `check` and `doctor` call `upstreamStatus` rather
+  than only validating the lock, so this repository now reports openspec as
+  pinned and not installed instead of showing it a green tick.
+- Both finding renderers printed `fix: undefined` when a rule supplied no fix.
+  `fix` is optional on a `Finding`, and the literal string reached the developer
+  as though it were advice.
+- The observed-RED message named `--spike`, which is not a flag on any command
+  and could not be passed to a hook that fires on Write/Edit. It is
+  `KEEL_SPIKE=1`. `keel review` recommended `/verify`, which does not exist.
+- `process.exit` discarded queued output, cutting a blocking reason off mid-word
+  at ~146 KB over a pipe. Output drains before exit now.
+
 ### Fixed — docs, CI and packaging
 
 A remediation pass over claims that were wrong, unverifiable, or missing. Each
@@ -52,8 +276,10 @@ reproduced, the number was removed rather than restated.
   a `rubric.md`.
 - **The mutation floor's ratchet claim.** The README said the floor ratchets off
   "the trend `keel doctor` reports". `doctor` reports no mutation data at all,
-  and neither does `keel telemetry show`; `mutationTrend()` exists in
-  `src/telemetry/ship.ts` with no caller. The README now says what exists.
+  and neither does `keel telemetry show`; the `mutationTrend()` helper the claim
+  rested on had no caller and has since been deleted, so the feature no longer
+  reads as shipped. The README says what exists: the events are spooled, nothing
+  reads them back, and ratcheting is a hand edit.
 - **`/verify` removed from the README.** No `commands/` directory ships and
   `plugin.json` declares no `commands`, so the command does not exist. (It is
   still listed in `CHAIN` in `src/cli/commands/review.ts`.)
@@ -75,11 +301,44 @@ reproduced, the number was removed rather than restated.
   invokes the router — the SessionStart hook injects a reminder. The
   classification is deterministic; running it is advisory, and CI is where the
   process gates actually bite.
-- **`README` config example matches what `init` writes** (`keel-standards@0.1.0`,
-  not `@1.0.0`), and **documents the four undocumented sections** — `upstream`,
-  `display`, `spec` and `mutation` — appearing in neither the example nor the
-  generated file. `mutation.test_command` was previously discoverable only from
-  an error message.
+- **The README documented an effort level the schema rejects.** The config
+  example said `# low | medium | high | xhigh`; `EFFORTS` in
+  `src/shared/config.ts` is three values, and `keel check` fails an `xhigh` with
+  `tracks.full.effort: Invalid option`. The fourth value belongs to Claude Code's
+  own `effortLevel` field, not to Keel's `tracks` — `docs/decisions.md` §15 now
+  says which enum is which, because copying the wrong one produced a config that
+  will not load.
+- **The Upstream table listed three dependencies; `upstream.lock` pins four.**
+  `superspec @ 0.1.11` was missing from the README along with its
+  `IDENTIFICATION IS UNCONFIRMED` caveat, while `keel check` prints it and
+  `docs/decisions.md` §11 explains it — so the README was the only place it was
+  hidden, in a document whose stated posture is "stated up front rather than
+  discovered three days in".
+- **`npm run verify` is not "every gating check, in the order CI runs them".**
+  It is typecheck, lint, build, test, bundle size and the three Python checks.
+  CI additionally runs the committed-bundle freshness check and four Keel-on-Keel
+  gates — `keel mutate`, `keel spec check`, `keel gate`, `keel check` — that
+  `verify` never touches, so a green `verify` could still go red on five things.
+  The README now says what `verify` covers and what it does not.
+- **`keel telemetry` was missing from the command list**, despite being a
+  declared command with three subcommands that the README itself uses further
+  down.
+- **There was no CI documentation at all.** The README argued `keel gate` exists
+  for CI coverage, said `keel spec check` in CI is where the process gates that
+  matter are enforced, and called `keel mutate` "CI only" — and never showed a
+  workflow, a base-ref computation, or `--trust-repo-rules`, which appeared in
+  exactly one file in the repository and no prose anywhere. A new "Continuous
+  integration" section shows the minimum shape and points at
+  `.github/workflows/ci.yml`.
+- **`keel init` writes all ten config sections, every key at its default**, each
+  with the comment that explains it, and the values come from the canonical
+  defaults rather than being retyped in the scaffold, so the generated file
+  cannot drift from what Keel actually falls back to. It wrote six of ten before;
+  `upstream`, `display`, `spec` and `mutation` appeared in neither the generated
+  file nor the README, and `mutation.test_command` was discoverable only from the
+  error message you got when mutation testing could not find a test command. The
+  README's config example matches it, down to `packs_ref: keel-standards@0.1.0`
+  (it said `@1.0.0`).
 
 **CI**
 
@@ -98,9 +357,14 @@ reproduced, the number was removed rather than restated.
   skipping the Python suite on a flake.
 - **The mutation gate runs on pushes to `main`, not only on PRs.** Mutation score
   is this project's stated replacement for coverage, so a direct push — the one
-  change no reviewer saw — was exactly the wrong thing to exempt. Pushes diff
-  against `HEAD^`, which is the previous default-branch tip for a merge, a
-  squash or a fast-forward alike.
+  change no reviewer saw — was exactly the wrong thing to exempt.
+- **A push diffs against `github.event.before`, not `HEAD^`.** The two agree for
+  a merge commit and for a squash, which is why the mistake survived review, but
+  a rebase-merge fast-forwards N commits at once and `HEAD^` then names the
+  second-to-last of them: everything before it was never gated and never
+  mutated. Both the mutation job and the standards-gates job compute the base the
+  same way, and both fall back to `HEAD^` only when `github.event.before` does
+  not resolve.
 - **Python CI tooling is pinned exactly** (`pytest==9.0.2`, `ruff==0.15.8`,
   `mypy==1.19.1`) — the versions the suite was last verified green against.
   `pip install pytest ruff mypy` let CI break with no commit behind it, which is
@@ -111,7 +375,12 @@ reproduced, the number was removed rather than restated.
   ran in exactly one place — Claude Code's PostToolUse hook — so any change
   written in another editor, by a bot, or by anyone without the plugin met no
   org rules at all, and CI could not run them. Diff-only and blocking-severity
-  only, same as the hook.
+  only, same as the hook. It passes `--trust-repo-rules`; `--all` is deliberately
+  withheld, because CI blocks on `high`-severity findings and advisory ones
+  belong in the editing loop where they can be acted on. Adopters can copy the
+  job — the README's new "Continuous integration" section shows the minimum
+  shape, including the base-ref computation and why `--trust-repo-rules` belongs
+  in a workflow file and nowhere else.
 
 **Packaging**
 
@@ -135,6 +404,31 @@ reproduced, the number was removed rather than restated.
 
 ### Added
 
+- **`keel gate`** — run the standards gates over a diff, outside the editing
+  loop. Until it existed, `runGates` had exactly one caller: the PostToolUse
+  hook. Standards were therefore enforced only when Claude Code did the editing,
+  and the one place a team actually blocks a merge was the one place the gates
+  were absent. Same rules as the hook — diff-only evaluation, `high` severity
+  blocks, a rule that cannot run reports an error and never blocks — with one
+  deliberate difference: it exits non-zero when a gate *did not run*, because a
+  dropped gate is not a passed gate. Flags: `--against <ref>`, `--json`,
+  `--all`, `--trust-repo-rules`.
+- **`keel trust [list|add <pack>|remove <pack>]`** — the human half of the pack
+  trust boundary above. `list` shows every repo-local rule that will not run,
+  where it lives, what it hashes to, and whether it was never approved or has
+  changed since; `add` approves every rule file in one pack at its current
+  contents; `remove` revokes. Hooks never prompt, which is exactly why approval
+  needs a command — without it the security fix would have been a wall with no
+  door. Approvals live in `.keel/trust.json`, which is gitignored: trust is per
+  checkout, not something a repository grants itself.
+- **`src/cli/registry.ts` — one declared command and flag table.** The usage
+  screen is rendered from it and every flag is validated against it, which closes
+  three defects structurally rather than one at a time. `keel route --trak full`
+  used to exit 0 having silently ignored the typo, so a developer believed they
+  had overridden the track and had not; unknown flags and unknown subcommands are
+  now rejected by name, with a near-miss suggestion and the list of what the
+  command does accept. `--version` printed the usage screen. And `--help` had
+  drifted, omitting four flags `review record` actually reads.
 - **Mutation testing** (`keel mutate`). Diff-only, deterministic, gated on
   score with a 50% starting floor that ratchets. AST-driven operators for both
   languages; the runner drives the repo's own test command and always restores
@@ -170,6 +464,31 @@ reproduced, the number was removed rather than restated.
   that will not parse.
 - `skillOverrides` wiring for `upstream.disabled_skills`, with the plugin-skill
   limitation reported rather than papered over.
+
+### Removed
+
+- **Twenty exports nothing called.** A scan for exported symbols with no
+  reference anywhere in `src/`, `tests/` or `scripts-dev/` found twenty, each
+  appearing exactly once — in its own declaration. Dead code here was not inert:
+  two of them had already made the documentation claim behaviour that did not
+  exist. The README described a mutation-score ratchet driven by
+  `mutationTrend()`, which no command called, so the feature read as shipped;
+  `writeState` and `clearBranch` named a `keel doctor --reset-tdd` flag the
+  argument validator rejects. An export with no caller is a promise nothing
+  keeps.
+- **`sourceCandidatesFor` / `existingSourceFor`** — the reverse direction of test
+  pairing, source-from-test. Not merely unused but wrong:
+  `dir.replace(/^tests/, "src")` never resolves a monorepo layout, so
+  `packages/api/tests/util/money.test.ts` could not find its source, and `test/`,
+  `spec/` and `__tests__/` roots failed too. The forward direction the gates
+  actually use is correct and well covered; deleting the broken half removes a
+  trap for whoever wires up source-from-test later, who would otherwise have
+  started from something that looked finished.
+- `matchesAnyAbsolute`, `reviewTrend`, `setSessionId`, `isFullyPinned`,
+  `pluginDirExists`, `archiveDir`, `fileOverride`, `readYamlFile`, `headSha`,
+  `mergeBase`, `isOk`, `readStdin`, `logInfo`, `resetTypeScriptCache`,
+  `TrackSchema`, `Role`, and `PYTHON_BINARY_MUTATIONS` — a second, unused source
+  of truth for an operator table the Python side already owns.
 
 ### Changed
 

@@ -76,6 +76,16 @@ function repoLocalPacks(options: TrustOptions): Array<{ name: string; files: str
     }));
 }
 
+/**
+ * List what would run, and what will not until someone approves it.
+ *
+ * **Always exits 0.** It used to exit 1 whenever anything was unapproved, which
+ * made a read-only listing command abort any `set -e` script that ran it — the
+ * script could no longer even *show* the developer what needed approving.
+ * Failing on an unapproved pack is `keel gate`'s job, and `keel gate` still does
+ * it: an unapproved gate is a gate that did not run, and CI must not call that a
+ * pass. This command reports; that one blocks.
+ */
 function trustList(options: TrustOptions): number {
   const untrusted = listUntrustedRules(scopeOf(options));
   const local = repoLocalPacks(options);
@@ -88,7 +98,7 @@ function trustList(options: TrustOptions): number {
       untrusted,
       untrustedCount: untrusted.length,
     });
-    return untrusted.length > 0 ? 1 : 0;
+    return 0;
   }
 
   heading("Repo-local pack rules");
@@ -120,8 +130,9 @@ function trustList(options: TrustOptions): number {
   }
   warn(`${untrusted.length} rule${untrusted.length === 1 ? "" : "s"} will not run until approved`);
   detail(`approvals live in ${storePath(options.repoRoot)}, which is gitignored — trust is per checkout, not something a repository grants itself`);
+  detail("`keel gate` is the command that fails on these; this one only reports, so it exits 0");
   line();
-  return 1;
+  return 0;
 }
 
 function trustAdd(options: TrustOptions): number {

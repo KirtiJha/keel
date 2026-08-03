@@ -8,7 +8,7 @@ import { gateStats, overrideStats, tddStats } from "../../telemetry/ship.js";
 import { auditPhases } from "../../upstream/phases.js";
 import { upstreamStatus } from "../../upstream/install.js";
 import { loadLock, validateLock } from "../../upstream/lock.js";
-import { branchState, readState } from "../../tdd/state.js";
+import { branchState, clearBranch, readState, writeState } from "../../tdd/state.js";
 import { listUntrustedRules } from "../../standards/trust.js";
 import { detail, dim, fail, heading, info, json, line, ok, rows, warn } from "../output.js";
 
@@ -47,9 +47,85 @@ const CALIBRATION_MIN_SAMPLE = 20;
 
 export interface DoctorOptions {
   readonly json?: boolean;
+  /**
+   * Clear the observed-RED ledger before reporting.
+   *
+   * `true` drops every branch; a string drops that one branch. Absent leaves
+   * the ledger alone — this is never implied by running `keel doctor`.
+   */
+  readonly resetTdd?: boolean | string;
+}
+
+/** What a `--reset-tdd` run destroyed, so it can be reported rather than assumed. */
+interface TddReset {
+  /** The branch asked for, or null when every branch was cleared. */
+  readonly branch: string | null;
+  /** Branches that actually held state before the reset. */
+  readonly branches: number;
+  /** Test files that lost their recorded run — the RED that has to be re-earned. */
+  readonly expectations: number;
+  /** Of those, the ones whose RED had been observed and was still valid. */
+  readonly observedRed: number;
+}
+
+/**
+ * Drop observed-RED history.
+ *
+ * `writeState` and `clearBranch` are the ledger's own reset primitives and had
+ * no production caller — their doc comments named this flag for months before
+ * it existed. The counts are read *before* the write, because this is
+ * destructive in a way the developer feels immediately: gate 3 re-blocks the
+ * next new exported symbol until its test has been watched failing again. A
+ * silent reset would leave them debugging a gate that is working correctly.
+ */
+function resetTddLedger(repoRoot: string, target: boolean | string): TddReset {
+  const before = readState(repoRoot);
+  const wanted = typeof target === "string" ? target : null;
+  const affected = Object.keys(before.branches).filter((name) => wanted === null || name === wanted);
+
+  let expectations = 0;
+  let observedRed = 0;
+  for (const name of affected) {
+    // Via `branchState`, which tolerates a hand-edited snapshot.
+    for (const e of Object.values(branchState(before, name).expectations)) {
+      expectations++;
+      if (e.redObservedAt !== null && e.redObservedAt >= e.writtenAt) observedRed++;
+    }
+  }
+
+  if (wanted === null) writeState(repoRoot, { version: 1, branches: {} });
+  else clearBranch(repoRoot, wanted);
+
+  return { branch: wanted, branches: affected.length, expectations, observedRed };
+}
+
+function reportReset(reset: TddReset): void {
+  heading("TDD ledger reset");
+  const files = `${reset.expectations} test file${reset.expectations === 1 ? "" : "s"}`;
+  if (reset.branch === null) {
+    ok(`cleared every branch: ${reset.branches} branch${reset.branches === 1 ? "" : "es"}, ${files}`);
+  } else if (reset.branches === 0) {
+    info(`\`${reset.branch}\` had nothing recorded — the ledger is unchanged`);
+    return;
+  } else {
+    ok(`cleared \`${reset.branch}\`: ${files}`);
+  }
+  if (reset.observedRed > 0) {
+    warn(
+      `${reset.observedRed} of those had a valid observed RED — that evidence is gone and has to be earned again`,
+    );
+  }
+  detail(
+    "gate 3 blocks a new exported symbol until its test has been seen failing, so run the test and watch it fail before implementing",
+  );
 }
 
 export function doctor(repoRoot: string, pluginRoot: string, options: DoctorOptions = {}): number {
+  // Before anything reads the ledger, so what is reported below is what is
+  // left rather than what was just deleted.
+  const reset =
+    options.resetTdd === undefined ? null : resetTddLedger(repoRoot, options.resetTdd);
+
   const resolved = loadConfigOrDefaults(repoRoot);
   const strict = loadConfigStrict(repoRoot);
   const asJson = options.json === true;
@@ -127,6 +203,7 @@ export function doctor(repoRoot: string, pluginRoot: string, options: DoctorOpti
       },
       gates,
       tddGates: tdd,
+      tddReset: reset,
     });
     return 0;
   }
@@ -138,6 +215,8 @@ export function doctor(repoRoot: string, pluginRoot: string, options: DoctorOpti
     ["plugin", pluginRoot],
     ["branch", isGitRepo(repoRoot) ? currentBranch(repoRoot) : dim("not a git repo")],
   ]);
+
+  if (reset !== null) reportReset(reset);
 
   heading("Configuration");
   if (strict.ok) {

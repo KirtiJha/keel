@@ -1,5 +1,6 @@
 import { loadConfigOrDefaults } from "../../shared/config.js";
-import { changedLines, diffSummary, isGitRepo } from "../../shared/git.js";
+import { exec } from "../../shared/exec.js";
+import { changedLines, diffSummary, isGitRepo, showFile } from "../../shared/git.js";
 import { stopwatch } from "../../shared/log.js";
 import { applicablePacks, runGates } from "../../standards/runner.js";
 import { loadPacks } from "../../standards/loader.js";
@@ -38,6 +39,40 @@ export interface GateOptions {
    * the runner. That would make the gates reachable from CI in name only.
    */
   readonly trustRepoRules: boolean;
+}
+
+/**
+ * Where the file text comes from, and why it has to match the line numbers.
+ *
+ * `--against <ref>` asks git for `<ref>...HEAD`, so every changed line number is
+ * a line number *in HEAD*. The contents used to be read from the working tree
+ * regardless — two sources, one set of line numbers. On a clean CI checkout the
+ * two agree and nothing shows; locally, with any uncommitted edit, findings land
+ * on whatever happens to sit at that line number now. A gate that reports the
+ * wrong line is worse than one that reports nothing, because the developer looks
+ * at innocent code and concludes the rule is broken.
+ *
+ * So the side is chosen once, per run: HEAD when a base ref was given, the
+ * working tree otherwise. `contentsAt` names it in the report and in `--json`,
+ * and an uncommitted edit to a file being checked is called out rather than
+ * silently skipped.
+ */
+function readAtHead(root: string, repoRelPath: string): string | null {
+  return showFile(root, "HEAD", repoRelPath);
+}
+
+/** Checked files whose working-tree contents differ from HEAD. */
+function uncommittedAmong(root: string, paths: readonly string[]): string[] {
+  if (paths.length === 0) return [];
+  const res = exec("git", ["diff", "--name-only", "HEAD"], { cwd: root });
+  if (!res.ok || res.value.code !== 0) return [];
+  const dirty = new Set(
+    res.value.stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l !== ""),
+  );
+  return paths.filter((path) => dirty.has(path));
 }
 
 interface FileOutcome {
@@ -95,8 +130,29 @@ export async function gate(options: GateOptions): Promise<number> {
       continue;
     }
 
+    // The line numbers above came from `<ref>...HEAD`, so the text has to as
+    // well. Without a base ref the diff is working tree vs HEAD and the runner's
+    // own read of the working tree is already the matching side.
+    let source: string | null = null;
+    if (options.against !== null) {
+      source = readAtHead(options.repoRoot, file.path);
+      if (source === null) {
+        outcomes.push({
+          path: file.path,
+          blocking: [],
+          advisory: [],
+          errors: [],
+          untrusted: [],
+          budgetSkipped: [],
+          skipped: "its contents at HEAD could not be read, and the changed lines are HEAD's",
+        });
+        continue;
+      }
+    }
+
     const result = await runGates({
       ...(options.trustRepoRules ? { trustRepoRules: true } : {}),
+      ...(source === null ? {} : { source }),
       repoRoot: options.repoRoot,
       pluginRoot: options.pluginRoot,
       config,
@@ -105,20 +161,27 @@ export async function gate(options: GateOptions): Promise<number> {
     });
 
     // Same events the hook emits, so `keel doctor`'s hit rates count gates run
-    // in CI as well as gates run in an editing session.
+    // in CI as well as gates run in an editing session — and the same mapping,
+    // which is the part that was wrong. `untrusted` and `skipped` were folded
+    // into `error`, so a pack that was never approved to run was indistinguishable
+    // from one whose rule threw. `GateResultKind` keeps them separate on purpose:
+    // "this pack has not fired in a quarter" means something very different if
+    // the pack has not been approved to run.
     for (const packResult of result.results) {
       record(options.repoRoot, config, {
         kind: "gate",
         pack: packResult.pack,
         severity: packResult.severity,
         result:
-          packResult.status !== "ok"
-            ? "error"
-            : packResult.findings.length === 0
-              ? "pass"
-              : packResult.severity === "high"
-                ? "fail"
-                : "warn",
+          packResult.status === "untrusted" || packResult.status === "skipped"
+            ? packResult.status
+            : packResult.status === "error"
+              ? "error"
+              : packResult.findings.length === 0
+                ? "pass"
+                : packResult.severity === "high"
+                  ? "fail"
+                  : "warn",
         finding_count: packResult.findings.length,
         duration_ms: packResult.durationMs,
       });
@@ -143,6 +206,16 @@ export async function gate(options: GateOptions): Promise<number> {
   const skipped = outcomes.filter((o) => o.skipped !== null);
   const untrusted = [...new Set(outcomes.flatMap((o) => o.untrusted))];
   const budgetSkipped = [...new Set(outcomes.flatMap((o) => o.budgetSkipped))];
+  const contentsAt = options.against === null ? "working tree" : "HEAD";
+  // Only worth saying when the two sides could differ, which is exactly when a
+  // base ref was given and the tree is not clean.
+  const uncommitted =
+    options.against === null
+      ? []
+      : uncommittedAmong(
+          options.repoRoot,
+          candidates.map((f) => f.path),
+        );
   const ms = timer();
 
   record(options.repoRoot, config, {
@@ -174,6 +247,8 @@ export async function gate(options: GateOptions): Promise<number> {
     json({
       ok: !failed,
       against: options.against,
+      contentsAt,
+      uncommitted,
       changedFiles: summary.files.length,
       checkedFiles: candidates.length,
       blocking,
@@ -189,12 +264,26 @@ export async function gate(options: GateOptions): Promise<number> {
 
   heading("Standards gates");
   rows([
-    ["against", options.against ?? dim("working tree vs HEAD")],
+    ["against", options.against === null ? dim("working tree vs HEAD") : `${options.against}...HEAD`],
+    ["contents", options.against === null ? dim("working tree") : dim("read at HEAD")],
     ["changed", `${summary.files.length} file${summary.files.length === 1 ? "" : "s"}`],
     ["checked", `${candidates.length} matched a gate pack`],
     ["packs", gatePacks.length === 0 ? dim("none in gate mode") : String(gatePacks.length)],
     ["took", `${ms.toFixed(0)} ms`],
   ]);
+
+  if (uncommitted.length > 0) {
+    heading("Not what is on your disk");
+    warn(
+      `${uncommitted.length} of the checked file${uncommitted.length === 1 ? " has" : "s have"} uncommitted changes`,
+    );
+    for (const path of uncommitted.slice(0, 10)) info(path);
+    if (uncommitted.length > 10) info(`…and ${uncommitted.length - 10} more`);
+    detail(
+      `\`--against ${options.against ?? ""}\` judges ${options.against ?? "the ref"}...HEAD, so the text above was read at HEAD — your uncommitted edits were not evaluated`,
+    );
+    detail("fix: run `keel gate` with no --against to check the working tree, or commit first");
+  }
 
   if (gatePacks.length === 0) {
     heading("Summary");

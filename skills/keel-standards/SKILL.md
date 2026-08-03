@@ -146,12 +146,37 @@ invalidates it and you approve again**. If a pack you just wrote produces no
 findings and no errors, this is the first thing to check: `keel gate` and
 `keel doctor` report an untrusted pack as *did not run*, never as *passed*.
 
+Approvals live in `.keel/trust.json`, which is gitignored and signed under a key
+outside every repository. Do not try to commit one: trust is per checkout, so a
+record your repo carries will not verify on anyone else's machine, and that is
+the point — otherwise a hostile repo could ship its own approval.
+
+### In CI, the flag replaces the approval
+
+**`keel gate --trust-repo-rules`.** A runner has no human to approve anything and
+no machine key that survives the job, so without the flag every repo-local pack
+reports as unapproved, `keel gate` exits 1, and the job is told to run
+`keel trust add` — advice a machine cannot take. Your pack would be enforced on
+developers' machines and nowhere else.
+
+It is safe in that one place because the job has already checked the repository
+out and is already running its code: `npm ci` runs its install scripts,
+`npm test` runs its tests. A pack rule is not a new privilege on a runner. It is
+a deliberate flag rather than a `CI=true` sniff, because a boundary that disables
+itself on a variable someone else controls is not a boundary — so put it in the
+workflow file, visibly, and **never in a local alias or a shell function**. Keel's
+own `.github/workflows/ci.yml` has the shape to copy, including the base-ref
+computation the gate needs.
+
 ## Checking your work
 
 - `keel check` — validates every pack, reports unresolvable globs and packs that
   declare a mode but ship nothing to run.
 - `keel gate` — runs the gates over the current diff outside the editing loop,
-  which is also how they run in CI. The fastest way to see your rule fire.
+  which is also how they run in CI (there with `--against <base>` and
+  `--trust-repo-rules`; see above). The fastest way to see your rule fire.
+  `--all` adds advisory findings; it exits non-zero when a gate *did not run*,
+  not only when one found something.
 - `keel doctor` — shows which packs are active, their timings, and their hit
   rates. A pack that has never fired in 20 runs is a candidate for deletion.
 

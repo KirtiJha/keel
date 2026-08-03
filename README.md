@@ -135,7 +135,7 @@ is the cheapest proof the plugin is live.
 ```bash
 cd your-repo
 keel init
-git add keel.config.yaml upstream.lock .gitignore CLAUDE.md .claude/
+git add keel.config.yaml upstream.lock .gitignore CLAUDE.md .claude/settings.json .claude/agents/
 git commit -m "chore: keel init"
 keel check         # validates config, packs, phase ownership, upstream pins
 keel doctor        # what is active, how fast it runs, how often gates fire
@@ -145,9 +145,9 @@ keel doctor        # what is active, how fast it runs, how often gates fire
 the exact `git add` line for what it created; this is the step people skip and
 then blame the router for. Those six files sit in the working tree, and the
 router classifies the working tree — only `.keel/` is excluded from the diff. Six
-new files and ~115 lines is well past `quick_max_files: 1`, so the next two-line
-fix routes to **standard** and asks for a plan. Commit first and it routes to
-quick, which is the whole point.
+new files and roughly 200 lines is well past `quick_max_files: 1`, so the next
+two-line fix routes to **standard** and asks for a plan. Commit first and it
+routes to quick, which is the whole point.
 
 What `init` writes, and whether it belongs in git:
 
@@ -209,7 +209,125 @@ keel spec      # full-track spec discipline: size cap, delta, archive gate
 keel mutate    # diff-only mutation testing, gated on score
 keel review    # assemble the review chain's input
 keel upstream  # verify or install the pinned upstream set
+keel telemetry # show, bundle or clear the local event spool
 ```
+
+That is the whole surface, plus `keel version` and `keel help`. The help screen is
+rendered from the same table every flag is validated against
+(`src/cli/registry.ts`), so the two cannot drift, and `keel <command> --help`
+lists that command's flags. An unknown flag or subcommand is an error naming what
+the command does accept —
+`keel route --trak full` used to exit 0 having ignored the typo, leaving a
+developer believing they had overridden the track.
+
+---
+
+## Continuous integration
+
+**This is not optional, and it is the part adopters skip.** `keel gate`,
+`keel spec check` and `keel mutate` are the enforcement story for everyone who is
+not editing inside Claude Code — another editor, a bot, a web edit, a direct
+push — and `keel spec check` in CI is where the process gates that matter
+(full-track proposals, the spec cap, the archive rule) are actually enforced. A
+repository that installs Keel and wires up no CI has the router's advice, the
+skills, and nothing that stops anything.
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) is the worked example —
+Keel's own CI is these jobs, so they are tested every time this repository
+builds. The minimum shape is small:
+
+```yaml
+jobs:
+  keel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # every gate diffs; a shallow clone has no base
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: npm ci
+
+      # Keel is not on npm while it is internal, so CI installs it the same way
+      # you did: from a checkout. Clone it outside the workspace so it is not
+      # part of the repository under test, and pin the commit — no releases are
+      # tagged yet, and a gate that changes under you is not a gate.
+      - name: Install the keel CLI
+        run: |
+          git clone https://github.com/KirtiJha/keel "$RUNNER_TEMP/keel"
+          git -C "$RUNNER_TEMP/keel" checkout <commit-sha>
+          (cd "$RUNNER_TEMP/keel" && npm ci && npm run build && npm link)
+
+      - name: keel gate and keel mutate
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          elif git rev-parse --verify --quiet "${{ github.event.before }}^{commit}" >/dev/null; then
+            base="${{ github.event.before }}"
+          elif git rev-parse --verify --quiet "HEAD^" >/dev/null; then
+            base="HEAD^"
+          else
+            echo "root commit — no base to diff against, nothing to gate"
+            exit 0
+          fi
+          keel gate   --against "$base" --trust-repo-rules
+          keel mutate --against "$base"
+
+      - name: keel spec check
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            keel spec check --default-branch
+          else
+            keel spec check
+          fi
+```
+
+If you would rather not `npm link`, `node "$RUNNER_TEMP/keel/scripts/cli.mjs"`
+is the same program — `bin/keel.mjs` is a thin shim over exactly that.
+
+Four things in there are not obvious.
+
+**On a push, the base ref is `github.event.before`, not `HEAD^`.** They agree for
+a merge commit and for a squash, which is why the mistake survives review — but a
+rebase-merge fast-forwards N commits at once, and `HEAD^` then names the
+second-to-last of them. Everything before it was never gated and never mutated.
+On a pull request the base is `origin/${{ github.base_ref }}`, which is why
+`fetch-depth: 0` is not optional: both gates diff, and a shallow clone has
+nothing to diff against.
+
+**`keel gate` needs `--trust-repo-rules` in CI.** A repo-local pack rule runs
+only after a human approves it (see [the trust boundary](#a-repo-local-pack-rule-is-code-and-runs-only-after-approval)),
+and a runner cannot approve anything: the approval is signed under a machine-local
+key that does not survive the job. Without the flag, `keel gate` reports every
+repo-local pack as unapproved, exits 1, and advises a machine to run
+`keel trust add` — advice it cannot take, so the gates would be reachable from CI
+in name only. The flag is safe *here specifically*, because the job has already
+checked the repository out and is already running its code: `npm ci` runs its
+install scripts, `npm test` runs its tests. A pack rule is not a new privilege on
+a runner. It is a flag rather than a `CI=true` sniff because environments set
+`CI` for all sorts of reasons, and a boundary that disables itself on a variable
+someone else controls is not a boundary. **Do not put it in a local alias or a
+shell function** — that is the one place it takes the boundary away.
+
+**`--default-branch` is what turns on the archive rule.** Locally `keel spec
+check` infers the default branch from its name (`main`, `master`, `trunk`), but
+`actions/checkout` leaves a detached HEAD, so `git rev-parse --abbrev-ref HEAD`
+answers `HEAD` and the inference never fires. On the default branch it has to be
+told. That rule — a proposal marked `applied` still sitting outside
+`archive/` fails the build — is what keeps specs current, and it is the reason
+`keel spec check` in CI is where the process gates actually bite.
+
+**Separate jobs beat one job.** The example above is a single job for brevity; in
+`.github/workflows/ci.yml` these are `standards-gates`, `mutation` and
+`spec-discipline`, because a failing `keel gate` in one step hides whatever
+`keel mutate` would have said in the next.
+
+Two more jobs are worth copying from the same file: `keel spec delta` posting the
+change delta as a PR comment — which needs `pull-requests: write` **on that job
+and nothing else**, and note that a job declaring `permissions` *replaces* the
+workflow default rather than adding to it, so `contents: read` has to be repeated
+— and `keel review record`, which feeds PR comment counts into telemetry from the
+one place the PR API is reachable.
 
 ---
 
@@ -287,7 +405,48 @@ Two properties the runner guarantees, so no pack author has to remember them:
 
 Rules are authored in TypeScript and transpiled on demand via
 `ts.transpileModule`, cached by content hash — no build step for pack authors.
-They may only use `import type`, since transpilation is single-file.
+They may only use `import type`, since transpilation is single-file. The compiled
+artifact under `.keel/cache/packs/` carries a stamp binding it to the source hash
+under a machine-local key, so a committed cache entry cannot stand in for the
+`rule.ts` a reviewer actually read.
+
+#### A repo-local pack rule is code, and runs only after approval
+
+A pack's `rule.ts` / `rule.py` is imported and executed **in-process**, with the
+full privileges of the session — any file, any subprocess, the network. Nothing
+about the pack format sandboxes it. That is fine for the packs that ship inside
+the plugin: they arrive with Keel and are trusted by construction. It is not fine
+for a pack found in the repository being edited, and `standards.dirs` defaults to
+`["standards"]` — so cloning an untrusted repo, opening it, and letting Claude
+edit one matching file was enough to run that repo's code, with no config and no
+prompt.
+
+So a repo-local rule runs only after an explicit approval:
+
+```bash
+keel trust list           # what will not run, where it lives, what it hashes to
+keel trust add <pack>     # approve it — read the file first
+keel trust remove <pack>  # revoke
+```
+
+Three properties are worth knowing before you rely on it:
+
+- **Approval is keyed to the exact bytes.** Editing an approved rule invalidates
+  it and you approve again. Trust is in the content, never in the path.
+- **A repository cannot approve itself.** Records live in `.keel/trust.json`,
+  which is gitignored, and each carries an HMAC under a random key stored outside
+  every repository (`KEEL_HOME`, or `~/.keel/machine-key`). A committed
+  `trust.json` does not verify. Trust is per checkout.
+- **An unapproved pack "did not run"; it never "passed".** `keel gate` exits
+  non-zero on one and `keel doctor` reports it. Failing to decide never blocks an
+  edit, though — hooks fail open, so the cost of an unapproved rule is a silent
+  gate, not a stopped developer. If a pack you just wrote produces no findings
+  and no errors, check this first.
+
+**In CI, pass `keel gate --trust-repo-rules`.** A runner cannot approve anything,
+and the approval it would need is signed under a key that does not survive the
+job. See [Continuous integration](#continuous-integration) for why that is safe
+there and nowhere else.
 
 Three reference packs ship as templates, one per mode:
 
@@ -410,13 +569,16 @@ Three properties it is built around:
 
 The floor is `mutation.min_score`, default `0.5`. **Ratcheting it is a manual
 decision and there is no report to make it from yet.** Each run writes a
-`mutation` telemetry event carrying the score, and `src/telemetry/ship.ts`
-exports a `mutationTrend()` helper over those events — but no command calls it.
-`keel doctor` does not report mutation at all, and neither does
-`keel telemetry show`. Until one of them does, ratcheting means reading
-`.keel/telemetry/*.jsonl` yourself and editing `min_score` in a commit.
+`mutation` telemetry event carrying the score, so the data is on disk — but
+nothing reads it back: `keel doctor` does not report mutation at all, and neither
+does `keel telemetry show`. A `mutationTrend()` helper existed in
+`src/telemetry/ship.ts` with no caller and was deleted rather than left to make
+the feature look shipped. Until a command reports the trend, ratcheting means
+reading `.keel/telemetry/*.jsonl` yourself and editing `min_score` in a commit.
 
 Nothing to mutate — a docs or config change — passes; that is not untested code.
+**Nothing it could run**, though, is a failure: a repo whose test command cannot
+be detected gets an error, not a score of 1.
 
 CI only. This is minutes of work, not milliseconds. It runs on pull requests and
 on pushes to the default branch, because mutation score stands in for coverage
@@ -523,13 +685,21 @@ for — "fail loud at `keel init`, fail safe at runtime".
 generated from the Zod schema (never hand-maintained alongside it) and written
 to `.keel/keel.config.schema.json` for editor completion.
 
-The file is **strict**: an unknown key is an error, not a warning, and
-`keel check` names the field and the fix. Every key below is optional except
-`version` and `repo` — omit a section and the defaults shown here apply.
+The file is **strict at every level**: an unknown key is an error, not a warning,
+and `keel check` names the section, the field and the fix. Nested strictness is
+the half that matters — every knob a team actually touches lives inside a
+section, and `router.quick_max_flies: 3` used to validate clean and silently run
+the default. Every key below is optional except `version` and `repo` — omit a
+section and the defaults shown here apply.
 
-`keel init` writes only the first six sections. The last four
-(`upstream`, `display`, `spec`, `mutation`) are documented here and nowhere in
-the generated file; they are live regardless, on the defaults shown.
+**`keel init` writes all ten sections, every key at its default**, each with the
+comment that explains the knob — 109 lines. It wrote six of them for a while, and
+`mutation.test_command` was discoverable only from the error message you got when
+mutation testing could not find a test command. Deleting a field from the
+generated file is safe: it falls back to exactly the value that was there.
+`.keel/keel.config.schema.json`, regenerated from the Zod schema on every `keel
+init`, is the authority on what the file accepts; this section is the authority
+on what the values mean.
 
 ```yaml
 version: 1                              # config format version, not your release
@@ -538,10 +708,8 @@ repo:
   name: payments-api
   languages: [typescript, python]       # typescript | python
 
-# --- written by `keel init` ---
-
 tracks:                                 # reasoning effort per track
-  quick:    { effort: low }             # low | medium | high | xhigh
+  quick:    { effort: low }             # low | medium | high
   standard: { effort: medium }
   full:     { effort: high }
 
@@ -557,7 +725,7 @@ router:
 standards:
   packs_ref: "keel-standards@0.1.0"     # pinned; `latest` is rejected
   disabled: []                          # pack names to switch off in this repo
-  dirs: [standards]                     # where to look for packs
+  dirs: [standards]                     # a rule found here is repo-local: needs `keel trust add`
 
 tdd:
   enabled: true
@@ -577,8 +745,6 @@ tdd:
 telemetry:
   sink: file                            # file | none
   path: ".keel/telemetry"
-
-# --- defaults, not written by `keel init` ---
 
 upstream:
   # Superpowers skills left on. Written to `skillOverrides` by `keel init` —
@@ -621,20 +787,41 @@ times. Set it explicitly if `keel mutate` is timing out.
 ## Development
 
 ```bash
-npm run verify           # every gating check, in the order CI runs them
+npm run verify           # typecheck, lint, build, test, bundle size, then the Python three
 npm run test             # vitest
 npm run lint             # eslint over src, tests, build.mjs, scripts-dev
 npm run bench:size       # bundle size, and the assertion that no hook imports zod
 npm run bench:coldstart  # reported, not gated — see Performance
 ```
 
-`npm run verify` deliberately excludes `bench:coldstart`, matching CI: it is a
-noisy measurement, and having it in the middle of the chain meant a scheduler
-outlier stopped the run before the Python checks ever executed.
+**`verify` is not all of CI, and a green `verify` can still go red on five
+checks.** It runs `typecheck → lint → build → test → bench:size → py:lint →
+py:types → py:test`, and that is the whole list. What CI runs on top of it:
+
+| Also in CI | Why `verify` cannot cover it |
+|---|---|
+| committed bundles match a fresh build (`git diff --quiet -- scripts/`) | `verify` runs the build; it does not check whether you committed the result |
+| `keel mutate --against <base>` | minutes of work against a base ref, not seconds against a working tree |
+| `keel spec check` (`--default-branch` on `main`) | the archive rule only means something at merge |
+| `keel gate --against <base> --trust-repo-rules` | needs a base ref, and the trust opt-out that only makes sense on a runner |
+| `keel check` | dogfooding: Keel validating its own config, packs, phase ownership and pins |
+
+The last four are Keel run on Keel, and they are the ones a local `verify` never
+touches. `npm run coverage` and `npm run bench:coldstart` also run in CI and gate
+nothing — coverage because rule of the road 4 is mutation score, never coverage,
+and cold start because the measurement is too noisy to gate on
+(see [Performance](#performance)). `verify` deliberately excludes
+`bench:coldstart` for the same reason CI does not gate on it: having it in the
+middle of the chain meant a scheduler outlier stopped the run before the Python
+checks ever executed.
 
 `scripts/` is build output but **is committed**: Claude Code plugins are consumed
 directly from a git checkout, with no install step that could run esbuild. CI
 fails if the committed bundles differ from a fresh build.
+
+The full workflow is [`.github/workflows/ci.yml`](.github/workflows/ci.yml);
+[Continuous integration](#continuous-integration) explains the parts a repository
+adopting Keel should copy.
 
 ---
 
@@ -655,6 +842,20 @@ compatibility. `keel check` rejects any moving version (`latest`, `main`,
 | [Superpowers](https://github.com/obra/superpowers) | `6.2.0` | installed | planning, implementation |
 | [OpenSpec](https://www.npmjs.com/package/@fission-ai/openspec) | `1.7.0` | installed | design, spec-conformance |
 | [Spec Kit](https://github.com/github/spec-kit) | `0.15.1` | **pattern source** | — |
+| [Superspec](https://www.npmjs.com/package/@sbswang2002/superspec) | `0.1.11` | **pattern source** | — |
+
+Four pins, two installed. `keel check` prints all four.
+
+**Superspec's identification is unconfirmed, and the lock file says so.** npm
+carries about ten packages named some variant of "superspec". This one is pinned
+because its description — "OpenSpec + Superpowers workflow bootstrapper for
+Claude Code" — matches the plan's wording exactly, and the single thing the plan
+takes from it is that wiring: *OpenSpec plans, Superpowers builds*. That wiring
+is already implemented as Keel's own phase-ownership map in
+`src/upstream/phases.ts`, so installing a third workflow tool on top of it would
+put a second owner on planning. It installs nothing, which is why the pin is
+recorded despite the doubt: a wrong pin costs a wrong citation and nothing else.
+Correct it if a different project was meant.
 
 **Spec Kit is pinned but not installed, deliberately.** The plan takes two ideas
 from it — the "constitution" concept and the extension/preset pattern copied for
@@ -690,7 +891,7 @@ Called out plainly rather than left to be discovered.
 | **A `guide`-mode reference pack** | Guide packs encode org-specific judgment, which is exactly what the PDFs carry. The format is documented in the `keel-standards` skill and covered by tests; inventing an org convention to have an example would be inventing policy. |
 | **Integration TDD (`outer_loop`)** | Deferred by the plan, not by us. The config carries `outer_loop: false` and honours it; turning it on later is one config line plus a standards pack. |
 | **Per-skill subsetting of Superpowers** | Not possible from settings. `skillOverrides` exists and Keel writes it, but Claude Code documents that it **does not affect plugin skills** — and Superpowers ships as a plugin. Its skills are managed whole-plugin through `/plugin`. This is a platform boundary, not a Keel gap, and `keel init` says so rather than writing settings that quietly do nothing. |
-| **A mutation-score trend report** | `mutationTrend()` exists in `src/telemetry/ship.ts` and no command calls it. Neither `keel doctor` nor `keel telemetry show` reports mutation at all, so ratcheting `mutation.min_score` means reading the JSONL spool by hand. |
+| **A mutation-score trend report** | Every run spools a `mutation` event with its score, and nothing reads them back: neither `keel doctor` nor `keel telemetry show` reports mutation at all, so ratcheting `mutation.min_score` means reading the JSONL spool by hand. A `mutationTrend()` helper existed with no caller and was deleted — an export nothing calls is a promise nothing keeps. |
 | **A gating hook cold-start benchmark** | The measurement subtracts two independently noisy numbers and cannot separate a regression from scheduler jitter. It runs in CI and reports; it does not fail a build. `docs/decisions.md` §3 says what fixing it needs. |
 | **A published types package for pack authors** | There is no import specifier for `Finding`/`GateContext` that resolves outside this checkout. Rules are matched structurally and `import type` is erased, so declaring the shapes in the rule file costs nothing — but it is a workaround, not a design. |
 | **Slash commands** | No `commands/` directory ships and `plugin.json` declares none. Everything is CLI, hooks, skills and one output style. |
