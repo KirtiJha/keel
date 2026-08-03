@@ -65,8 +65,8 @@ tuning exercise.
 Stated up front rather than discovered three days in.
 
 **Claude Code only.** The gates run as Claude Code hooks, the skills and output
-style are a Claude Code plugin, and there is no CLI-only mode that reproduces
-in-loop enforcement. On Cursor, Copilot, Aider or a bare terminal, none of it
+style are Claude Code components `keel init` installs into your repository, and
+there is no CLI-only mode that reproduces in-loop enforcement. On Cursor, Copilot, Aider or a bare terminal, none of it
 fires. The CLI still answers questions; nothing stops anything.
 
 **TypeScript and Python only.** Symbol extraction for the router, the gate
@@ -85,16 +85,15 @@ of them anyway (see [Upstream](#upstream)).
 
 ## Install
 
-Two things have to happen and neither is optional: the `keel` CLI has to be on
-your PATH, and the plugin has to be registered with Claude Code. **The hooks,
-skills and output style come from the plugin registration.** Nothing in
-`keel.config.yaml` turns them on — a repo with the config and no plugin has
-documentation, not gates.
+Two steps: get the `keel` CLI onto your PATH, then run `keel init` in a
+repository. **There is no marketplace and no `/plugin install`.** You already
+have the source — cloning it is how you get the CLI — so `init` installs the
+hooks, skills and output style straight from that checkout into the
+repository's own `.claude/`.
 
 ### 1. The CLI
 
 Keel is not on npm: `package.json` is `private: true` while it is internal.
-Install it from a checkout.
 
 ```bash
 git clone https://github.com/KirtiJha/keel
@@ -109,24 +108,36 @@ as `node /path/to/keel/scripts/cli.mjs <command>` — `bin/keel.mjs` is a thin
 shim over exactly that, and it will tell you to run `npm run build` if the
 bundle is missing.
 
-### 2. The plugin
+### 2. `keel init` in your repository
 
-In Claude Code:
-
-```
-/plugin marketplace add KirtiJha/keel
-/plugin install keel@keel-internal
-/reload-plugins
+```bash
+cd your-repo
+keel init
 ```
 
-`.claude-plugin/marketplace.json` declares the marketplace as `keel-internal`
-and the plugin as `keel` with `source: "./"`, so this repository is both. A
-local checkout works in place of the GitHub reference:
-`/plugin marketplace add /path/to/keel`.
+That writes four things Claude Code discovers on its own:
 
-Check it took: `/plugin` should list `keel` as enabled, and a new session should
-start with Keel's process notes injected — that is the SessionStart hook, and it
-is the cheapest proof the plugin is live.
+| What | Where | Scope |
+|---|---|---|
+| hooks | `.claude/settings.local.json` | yours only — see below |
+| skills | `.claude/skills/<name>/SKILL.md` | committed |
+| output style | `.claude/output-styles/keel.md` | committed, off until you select it |
+| the reviewer subagent | `.claude/agents/keel-reviewer.md` | committed |
+
+Then `/reload-plugins` — or just start a new session — and check it took: a new
+session should open with Keel's process notes injected. That is the SessionStart
+hook, and it is the cheapest proof the wiring is live.
+
+**Everyone on the team runs `keel init` once.** The hook commands name an
+absolute path to *your* Keel checkout, and yours is not where a teammate put
+theirs, so that wiring goes to `.claude/settings.local.json` — the per-developer
+scope Claude Code already provides — and `init` adds it to `.gitignore`.
+Everything shared travels through git: `keel.config.yaml`, `CLAUDE.md`, the
+packs, the skills. Only the pointer to your own checkout is local.
+
+`init` never clobbers a hook you wrote. It replaces its own entries and leaves
+the rest, so running it after a `git pull` picks up a changed hook set without
+touching anything of yours.
 
 ---
 
@@ -135,7 +146,8 @@ is the cheapest proof the plugin is live.
 ```bash
 cd your-repo
 keel init
-git add keel.config.yaml upstream.lock .gitignore CLAUDE.md .claude/settings.json .claude/agents/
+git add keel.config.yaml upstream.lock .gitignore CLAUDE.md \
+        .claude/settings.json .claude/skills/ .claude/output-styles/ .claude/agents/
 git commit -m "chore: keel init"
 keel check         # validates config, packs, phase ownership, upstream pins
 keel doctor        # what is active, how fast it runs, how often gates fire
@@ -157,8 +169,11 @@ What `init` writes, and whether it belongs in git:
 | `upstream.lock` | yes — a template with no dependencies pinned yet |
 | `CLAUDE.md` | yes — only the region between `<!-- keel:begin -->` and `<!-- keel:end -->` is managed |
 | `.claude/settings.json` | yes — merged, never overwritten (`SUPERPOWERS_DISABLE_TELEMETRY=1`) |
+| `.claude/skills/` | yes — the three Keel skills |
+| `.claude/output-styles/keel.md` | yes — available to everyone, active for nobody until they select it |
 | `.claude/agents/keel-reviewer.md` | yes |
-| `.gitignore` | yes — `init` adds `.keel/` |
+| `.gitignore` | yes — `init` adds `.keel/` and `.claude/settings.local.json` |
+| `.claude/settings.local.json` | **no** — it names an absolute path to your own Keel checkout |
 | `.keel/` | no, and it is not disposable either — see below |
 
 `.keel/` is gitignored but **not** scratch. It holds `tdd-state.json` — the

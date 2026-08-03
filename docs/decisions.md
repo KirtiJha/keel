@@ -146,10 +146,16 @@ the runner rather than by Claude Code's hook timeout.
 
 ## 6. `scripts/` is committed build output
 
-Claude Code plugins are consumed directly from a git checkout; there is no
-install step that would run esbuild. Committing the bundles is what makes the
-plugin work when installed from a marketplace. CI fails if they differ from a
-fresh build, so they cannot silently drift.
+Keel is consumed directly from a git checkout — there is no marketplace and no
+install step that would run esbuild for you. `keel init` points the hooks at
+`scripts/*.mjs` in that checkout, so those bundles have to be there the moment
+someone clones it and runs `npm link`. Committing them is what makes a fresh
+clone work; CI fails if they differ from a fresh build, so they cannot silently
+drift.
+
+A consequence worth knowing: `npm run build` after a `git pull` is not optional
+if the source moved, because the hooks execute the committed bundle rather than
+the TypeScript.
 
 ---
 

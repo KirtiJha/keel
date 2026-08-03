@@ -11,6 +11,7 @@ import { scanGotchas, type GotchaCandidate } from "../../context/gotchas.js";
 import { loadPacks } from "../../standards/loader.js";
 import { mergeObjectKey, updateSettings } from "../../shared/settings.js";
 import { lockPath } from "../../upstream/lock.js";
+import { installComponents } from "../install-plugin.js";
 import { applySkillSubset, hasInstallableUpstream, upstreamInstallWarnings } from "./upstream.js";
 import { bold, detail, heading, info, line, ok, warn } from "../output.js";
 
@@ -36,19 +37,33 @@ export interface InitOptions {
   readonly install?: boolean;
 }
 
-const GITIGNORE_ENTRY = ".keel/";
+/**
+ * Paths `init` adds to `.gitignore`.
+ *
+ * `.keel/` is Keel's working state. `.claude/settings.local.json` holds the hook
+ * wiring, which names an absolute path to *this machine's* Keel checkout — a
+ * teammate's is somewhere else, so committing it would break their session and
+ * churn the file on every clone.
+ */
+const GITIGNORE_ENTRIES: readonly string[] = [".keel/", ".claude/settings.local.json"];
 
 function ensureGitignore(root: string): "added" | "present" | "created" {
   const path = join(root, ".gitignore");
   if (!isFile(path)) {
-    writeFileSync(path, `${GITIGNORE_ENTRY}\n`, "utf8");
+    writeFileSync(path, `${GITIGNORE_ENTRIES.join("\n")}\n`, "utf8");
     return "created";
   }
 
   const text = readFileSync(path, "utf8");
-  if (text.split("\n").some((l) => l.trim() === GITIGNORE_ENTRY)) return "present";
+  const present = new Set(text.split("\n").map((l) => l.trim()));
+  const missing = GITIGNORE_ENTRIES.filter((entry) => !present.has(entry));
+  if (missing.length === 0) return "present";
 
-  writeFileSync(path, `${text}${text.endsWith("\n") ? "" : "\n"}${GITIGNORE_ENTRY}\n`, "utf8");
+  writeFileSync(
+    path,
+    `${text}${text.endsWith("\n") ? "" : "\n"}${missing.join("\n")}\n`,
+    "utf8",
+  );
   return "added";
 }
 
@@ -397,6 +412,25 @@ export function init(options: InitOptions): number {
 
   // ---- skill subset (M2.4) ----
   for (const note of applySkillSubset(repoRoot)) info(note);
+
+  // ---- hooks, skills and the output style, straight from the checkout ----
+  //
+  // This is the install. There is no marketplace: you already have the source,
+  // because cloning it is how you got the CLI. See `src/cli/install-plugin.ts`.
+  const components = installComponents(repoRoot, pluginRoot);
+  for (const problem of components.problems) warn(problem);
+  if (components.hooks > 0) {
+    ok(`wired ${components.hooks} hook(s) into .claude/settings.local.json`);
+  }
+  if (components.skills.length > 0) {
+    ok(`installed ${components.skills.length} skill(s) to .claude/skills/`);
+    created.push(".claude/skills/");
+  }
+  if (components.outputStyle) {
+    ok("installed .claude/output-styles/keel.md");
+    created.push(".claude/output-styles/");
+    detail('turn it on with `/output-style keel`, or `"outputStyle": "keel"` in settings');
+  }
 
   // ---- subagents needing privileged frontmatter ----
   const agents = installAgents(repoRoot, pluginRoot);

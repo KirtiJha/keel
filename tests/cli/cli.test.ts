@@ -1907,3 +1907,102 @@ describe("gate --against reads the same side it measures", () => {
     expect(parsed.uncommitted).toEqual([]);
   });
 });
+
+describe("keel init installs the plugin components from the checkout", () => {
+  // There is no marketplace. `init` is the install, so what it writes has to be
+  // exactly what Claude Code discovers on its own — and it has to be safe to
+  // run twice, and safe to run in a repo where someone already wrote their own
+  // hooks.
+  interface HookCommand {
+    readonly command?: string;
+    readonly args?: readonly string[];
+  }
+  interface HookMatcher {
+    readonly matcher?: string;
+    readonly hooks?: readonly HookCommand[];
+  }
+
+  function localHooks(root: string): Record<string, HookMatcher[]> {
+    const raw = readFileSync(join(root, ".claude", "settings.local.json"), "utf8");
+    return (JSON.parse(raw) as { hooks?: Record<string, HookMatcher[]> }).hooks ?? {};
+  }
+
+  it("wires every hook event with an absolute path to this checkout", () => {
+    keel(["init"], repo.root);
+    const hooks = localHooks(repo.root);
+
+    expect(Object.keys(hooks).sort()).toEqual([
+      "MessageDisplay",
+      "PostToolUse",
+      "PreToolUse",
+      "SessionEnd",
+      "SessionStart",
+    ]);
+
+    const args = Object.values(hooks).flatMap((entries) =>
+      entries.flatMap((e) => (e.hooks ?? []).flatMap((h) => h.args ?? [])),
+    );
+    expect(args.length).toBeGreaterThan(0);
+    // `${CLAUDE_PLUGIN_ROOT}` is expanded for a plugin; nothing expands it in a
+    // settings file, so an unresolved one here would be a hook that never runs.
+    for (const arg of args) {
+      expect(arg).not.toContain("CLAUDE_PLUGIN_ROOT");
+      expect(arg.startsWith(PLUGIN_ROOT)).toBe(true);
+    }
+  });
+
+  it("installs the skills and the output style where Claude Code finds them", () => {
+    keel(["init"], repo.root);
+    for (const name of ["keel-init", "keel-spec", "keel-standards"]) {
+      expect(existsSync(join(repo.root, ".claude", "skills", name, "SKILL.md"))).toBe(true);
+    }
+    expect(existsSync(join(repo.root, ".claude", "output-styles", "keel.md"))).toBe(true);
+  });
+
+  it("does not select the output style — that is the developer's choice", () => {
+    keel(["init"], repo.root);
+    const settings = JSON.parse(
+      readFileSync(join(repo.root, ".claude", "settings.json"), "utf8"),
+    ) as { outputStyle?: string };
+    expect(settings.outputStyle).toBeUndefined();
+  });
+
+  it("gitignores the local settings file, which names a machine-specific path", () => {
+    keel(["init"], repo.root);
+    const ignored = readFileSync(join(repo.root, ".gitignore"), "utf8");
+    expect(ignored).toContain(".claude/settings.local.json");
+  });
+
+  it("adds no second copy when run again", () => {
+    keel(["init"], repo.root);
+    const before = localHooks(repo.root);
+    const count = (h: Record<string, HookMatcher[]>): number =>
+      Object.values(h).reduce((n, entries) => n + entries.length, 0);
+
+    keel(["init"], repo.root);
+    expect(count(localHooks(repo.root))).toBe(count(before));
+  });
+
+  it("keeps a hook the developer wrote", () => {
+    keel(["init"], repo.root);
+    const path = join(repo.root, ".claude", "settings.local.json");
+    const settings = JSON.parse(readFileSync(path, "utf8")) as {
+      hooks: Record<string, HookMatcher[]>;
+    };
+    settings.hooks["PostToolUse"] = [
+      ...(settings.hooks["PostToolUse"] ?? []),
+      { matcher: "Write", hooks: [{ command: "echo", args: ["mine"] }] },
+    ];
+    repo.write(".claude/settings.local.json", JSON.stringify(settings, null, 2));
+
+    keel(["init"], repo.root);
+    const after = localHooks(repo.root)["PostToolUse"] ?? [];
+    expect(after.filter((e) => e.hooks?.[0]?.command === "echo")).toHaveLength(1);
+  });
+
+  it("ships no marketplace manifest", () => {
+    // Removing it is the point: a marketplace is a second distribution channel
+    // to keep in sync with the checkout you already have.
+    expect(existsSync(join(PLUGIN_ROOT, ".claude-plugin", "marketplace.json"))).toBe(false);
+  });
+});

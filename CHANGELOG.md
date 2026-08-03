@@ -7,6 +7,46 @@ semver.
 
 ## [Unreleased]
 
+### Changed — there is no marketplace
+
+**Keel installs from the checkout, via `keel init`.** `.claude-plugin/marketplace.json`
+is deleted and `/plugin marketplace add` is no longer part of setup.
+
+A marketplace is machinery for shipping a plugin to people who do not have the
+source. That was never this situation: you clone the repository to get the CLI,
+so the source is already on the machine. The marketplace was a second
+distribution channel to keep in sync with the first, and a second thing that
+could be stale when the first had moved.
+
+`keel init` now writes the three things the plugin registration used to
+contribute, into the repository's own `.claude/`, where Claude Code discovers
+them without anything registering them:
+
+- **hooks** into `.claude/settings.local.json` (same event set, read from
+  `hooks/hooks.json`, with `${CLAUDE_PLUGIN_ROOT}` resolved to this checkout)
+- **skills** into `.claude/skills/<name>/SKILL.md`
+- **the output style** into `.claude/output-styles/keel.md` — installed, not
+  selected: making it available is installation, making it active is a
+  preference, and Keel does not reverse a deliberate choice
+
+Subagents already installed this way.
+
+**The hooks go to the *local* settings file, and that is deliberate.** A hook
+command has to name an executable path, and the path to your Keel checkout is
+yours alone. Writing it into the committed `.claude/settings.json` would break
+for every teammate and churn the file on every clone. `.claude/settings.local.json`
+is the per-developer scope Claude Code already provides, it takes precedence
+over the project file, and `init` adds it to `.gitignore`.
+
+The honest consequence: **every developer runs `keel init` once in the repo.**
+Everything shared travels through git — config, CLAUDE.md, packs, skills — and
+only the pointer to your own checkout is local.
+
+`init` replaces its own hook entries rather than appending, so it is idempotent
+and picks up a changed hook set after a `git pull`. A hook you wrote yourself is
+never touched.
+
+
 ### Security
 
 **Upgrading: a repo-local pack rule will not run until someone approves it.**
