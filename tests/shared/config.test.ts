@@ -175,6 +175,14 @@ describe("runtime reader", () => {
     const root = tempRepo();
     writeFileSync(join(root, "keel.config.yaml"), "version: 1\n  bad:\n :indent\n", "utf8");
     expect(() => loadConfigOrDefaults(root)).not.toThrow();
+
+    // Not throwing is the weaker half. What a caller depends on is getting a
+    // usable config back — a reader that returned an empty object would also
+    // "survive", and every gate downstream would silently run on nothing.
+    const resolved = loadConfigOrDefaults(root);
+    expect(resolved.config.router.quick_max_files).toBe(1);
+    expect(resolved.config.tdd.enabled).toBe(true);
+    expect(resolved.config.standards.dirs).toContain("standards");
   });
 
   it("keeps the valid parts of a partially broken config", () => {

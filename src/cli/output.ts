@@ -1,4 +1,23 @@
-/** Terminal output helpers. Colour only when the stream is a TTY. */
+import { redact } from "../shared/redact.js";
+
+/**
+ * Terminal output helpers. Colour only when the stream is a TTY.
+ *
+ * Every write goes through `out`/`errOut`, and both redact. The CLI prints
+ * repository content — a gate finding quoting the offending line, a config
+ * value, a spec delta — and `keel gate --json` output is exactly the sort of
+ * thing a CI job pipes into a log or a PR comment. The hook path already
+ * redacts at its single choke point; this is the same guarantee for the other
+ * half of the product, enforced in one place so no command has to remember.
+ */
+
+function out(text: string): void {
+  process.stdout.write(redact(text));
+}
+
+function errOut(text: string): void {
+  process.stderr.write(redact(text));
+}
 
 const useColour = process.stdout.isTTY === true && process.env["NO_COLOR"] === undefined;
 
@@ -20,11 +39,11 @@ export const SYMBOLS = {
 } as const;
 
 export function heading(text: string): void {
-  process.stdout.write(`\n${bold(text)}\n`);
+  out(`\n${bold(text)}\n`);
 }
 
 export function line(text = ""): void {
-  process.stdout.write(`${text}\n`);
+  out(`${text}\n`);
 }
 
 export function ok(text: string): void {
@@ -56,17 +75,17 @@ export function detail(text: string): void {
  * with an empty stderr, so a wrapper script had nothing to detect.
  */
 export function fatal(text: string): void {
-  process.stderr.write(`  ${red(SYMBOLS.fail)} ${text}\n`);
+  errOut(`  ${red(SYMBOLS.fail)} ${text}\n`);
 }
 
 /** The fix line under a `fatal`. Same stream, same indent as `detail`. */
 export function fatalDetail(text: string): void {
-  process.stderr.write(`    ${dim(text)}\n`);
+  errOut(`    ${dim(text)}\n`);
 }
 
 /** One JSON document on stdout, for `--json`. */
 export function json(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
+  out(`${JSON.stringify(value)}\n`);
 }
 
 /** Render key/value rows with aligned keys. */

@@ -229,7 +229,17 @@ describe("M8 acceptance — 500 real-shaped messages within budget", () => {
       `\n  message formatter: p50 ${p50.toFixed(3)} ms, p95 ${p95.toFixed(3)} ms (budget 100 ms) over ${messages.length} messages\n`,
     );
 
-    expect(p95).toBeLessThan(100);
+    // Reported against the 100 ms budget, gated an order of magnitude above it.
+    //
+    // `npm test` is the oracle `keel mutate` uses to decide whether a mutant
+    // was killed, so a wall-clock assertion here does not merely flake a build:
+    // a timing blip during a mutant run scores that mutant as killed and
+    // inflates the number this project uses in place of coverage. The sibling
+    // router benchmark was rewritten to a scaling ratio for exactly this; a
+    // single formatter call has no second measurement to divide by, so it gets
+    // the same treatment as the gate runner — a catastrophic-regression ceiling
+    // that scheduler jitter cannot reach. Observed p95 is ~0.14 ms.
+    expect(p95).toBeLessThan(1000);
   });
 
   it("renders the original for a deliberately malformed message, with no error", () => {

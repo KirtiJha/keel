@@ -216,9 +216,13 @@ describe("severity", () => {
       filePath: "src/fresh.ts",
     });
 
+    // `every` on an empty array is vacuously true, so assert the arrays are
+    // non-empty first — otherwise "high findings block" passes just as happily
+    // when nothing blocked at all.
+    expect(summary.blocking.length).toBeGreaterThan(0);
+    expect(summary.advisory.length).toBeGreaterThan(0);
     expect(summary.blocking.every((f) => f.pack === "high-pack")).toBe(true);
     expect(summary.advisory.every((f) => f.pack === "medium-pack")).toBe(true);
-    expect(summary.advisory.length).toBeGreaterThan(0);
   });
 });
 

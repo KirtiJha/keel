@@ -126,7 +126,7 @@ jobs:
     # project's stated replacement for coverage (rule of the road 4), so a
     # direct push to the default branch — which no PR ever reviewed — is
     # exactly the change that must not skip it. The gate is diff-only, so the
-    # only thing a push needs is a base ref: `HEAD^` is the previous default
+    # only thing a push needs is a base ref: `github.event.before` is the
     # branch tip whether the push was a merge commit, a squash, or a
     # fast-forward, which makes the diff the change that just landed.
     steps:
@@ -145,6 +145,12 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base="origin/${{ github.base_ref }}"
+          elif git rev-parse --verify --quiet "${{ github.event.before }}^{commit}" >/dev/null; then
+            # The tip before this push, not `HEAD^`. They agree for a merge
+            # commit and for a squash, but a rebase-merge fast-forwards N
+            # commits at once — and `HEAD^` then names the second-to-last of
+            # them, so everything before it is never gated and never mutated.
+            base="${{ github.event.before }}"
           elif git rev-parse --verify --quiet "HEAD^" >/dev/null; then
             base="HEAD^"
           else
@@ -232,6 +238,12 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base="origin/${{ github.base_ref }}"
+          elif git rev-parse --verify --quiet "${{ github.event.before }}^{commit}" >/dev/null; then
+            # The tip before this push, not `HEAD^`. They agree for a merge
+            # commit and for a squash, but a rebase-merge fast-forwards N
+            # commits at once — and `HEAD^` then names the second-to-last of
+            # them, so everything before it is never gated and never mutated.
+            base="${{ github.event.before }}"
           elif git rev-parse --verify --quiet "HEAD^" >/dev/null; then
             base="HEAD^"
           else
