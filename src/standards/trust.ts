@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -381,8 +381,37 @@ export function ruleTrust(
   return { kind: "trusted", sha256 };
 }
 
+/**
+ * The repo root as the MAC sees it, with symlinks resolved.
+ *
+ * `resolve()` normalises `.` and `..` but leaves symlinks alone, and the two
+ * sides of this check reach the root by different routes: `keel trust add`
+ * derives it from `process.cwd()`, which the OS has already canonicalised,
+ * while the hook derives it from whatever `cwd` string Claude Code passes. When
+ * those differ by a symlink the MAC stops matching, and an approved repo-local
+ * gate silently stops running — reporting "the approval was not written by this
+ * machine", visible only under `KEEL_DEBUG`, and *unfixable*: re-running
+ * `keel trust add` from the symlinked path writes a record signed against the
+ * canonical root, so the hook keeps rejecting it.
+ *
+ * macOS hands out `/tmp` for `/private/tmp` and puts `$TMPDIR` under
+ * `/var/folders`, so this is the common case there, not an exotic one.
+ * `escapesRepo` in `../shared/paths.js` already resolves its root for exactly
+ * this reason; that lesson belongs here too.
+ */
+function canonicalRoot(repoRoot: string): string {
+  try {
+    return realpathSync(repoRoot);
+  } catch {
+    // A root that cannot be resolved still needs a stable string, and both
+    // sides will fail the same way — which is a rejected approval, not a
+    // forged one.
+    return resolve(repoRoot);
+  }
+}
+
 function macParts(repoRoot: string, pack: string, file: string, sha256: string): string[] {
-  return ["keel-rule-trust/1", resolve(repoRoot), pack, file, sha256];
+  return ["keel-rule-trust/1", canonicalRoot(repoRoot), pack, file, sha256];
 }
 
 export interface TrustScope {

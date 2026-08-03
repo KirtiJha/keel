@@ -1,4 +1,5 @@
 import { logDebug, logError, setLogRoot, stopwatch } from "./log.js";
+import { redact } from "./redact.js";
 import { repoRootOrCwd } from "./paths.js";
 import { errorMessage } from "./result.js";
 
@@ -251,6 +252,21 @@ function emitAndExit(stream: NodeJS.WriteStream, text: string, code: number): vo
   if (emitted) return;
   emitted = true;
 
+  // Redaction belongs here, at the one place every hook's output leaves the
+  // process, for the same reason the fail-open contract does: no individual
+  // hook can then forget it.
+  //
+  // It was previously wired only into the debug log — so the one channel that
+  // *does not* reach the model was protected, and the two that do were not. A
+  // gate whose finding quotes the offending line is the obvious way to write a
+  // "no hardcoded secrets" pack, and Keel's own assertion-lint gate quotes the
+  // test name; both put the secret verbatim into the blocking reason fed back
+  // to Claude.
+  //
+  // Safe on the JSON path because the replacement is a bare `[redacted]` — no
+  // quotes, no backslashes — so a redacted payload is still valid JSON.
+  const safe = redact(text);
+
   // Set up front so that even an exit through some other path uses the right
   // code. Constraint 0.4: 2 blocks, 0 proceeds, 1 is never ours.
   process.exitCode = code;
@@ -269,7 +285,7 @@ function emitAndExit(stream: NodeJS.WriteStream, text: string, code: number): vo
   try {
     // EPIPE and friends: the reader is gone, so there is nothing left to flush.
     stream.on("error", exitNow);
-    stream.write(text, exitNow);
+    stream.write(safe, exitNow);
   } catch {
     exitNow();
   }

@@ -152,11 +152,23 @@ export async function gate(options: GateOptions): Promise<number> {
     loaded_ast: candidates.length > 0,
   });
 
-  // A gate that did not run must never be reported as a gate that passed. An
-  // unapproved repo-local rule is the actionable case — `keel trust add` fixes
-  // it — so it fails the run; a rule that will not compile is the pack author's
-  // bug and stays non-blocking, matching the hook's fail-open contract.
-  const failed = blocking.length > 0 || untrusted.length > 0;
+  // A gate that did not run must never be reported as a gate that passed —
+  // and here that applies to *every* way of not running, not just the
+  // approvable one.
+  //
+  // The hook's fail-open contract does not transfer to this command. Failing
+  // open in the editing loop is right: a broken pack must not stop someone
+  // typing. But this is the CI surface, and CI's whole job is to notice that a
+  // rule stopped being enforced. Exiting 0 while printing "a dropped gate is
+  // not a passed gate" four lines above the tick was the exact false green the
+  // command exists to prevent — a malformed pack would silently stop enforcing
+  // its rule, permanently, and the build would stay green.
+  const failed =
+    blocking.length > 0 ||
+    untrusted.length > 0 ||
+    errors.length > 0 ||
+    budgetSkipped.length > 0 ||
+    skipped.length > 0;
 
   if (options.json) {
     json({

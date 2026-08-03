@@ -203,7 +203,7 @@ export function gateObservedRed(
       {
         gate: "observed-red",
         message: `new exported ${newSymbols.length === 1 ? "symbol" : "symbols"} ${names} implemented without an observed failing test — ${status.reason}`,
-        fix: `${testHint}. A test that has never been seen to fail proves nothing. Use \`--spike\` for exploratory work.`,
+        fix: `${testHint}. A test that has never been seen to fail proves nothing. Set \`KEEL_SPIKE=1\` in the environment for exploratory work.`,
       },
     ],
     overridden: false,

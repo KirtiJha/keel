@@ -12,7 +12,7 @@ import { bold, detail, dim, fail, heading, info, json, line, ok, rows } from "..
  * `keel review` — assemble the review chain's input.
  *
  * The chain itself is Claude Code's: `/code-review`, `/simplify`,
- * `/security-review`, `/verify`, plus managed Code Review on the PR. Keel does
+ * `/security-review`, plus managed Code Review on the PR. Keel does
  * not reimplement any of them (rule 7 puts review with the built-ins and our
  * rubric). What Keel contributes is the *input*: which rubrics apply to the
  * paths this change touches, the spec delta if there is one, and the diff.
@@ -36,7 +36,7 @@ const CHAIN: ReadonlyArray<readonly [string, string]> = [
   ["/code-review", "correctness first, while the diff is still small"],
   ["/simplify", "then reuse and altitude — after it is correct, not before"],
   ["/security-review", "on full-track changes, or anything touching auth or data"],
-  ["/verify", "last: it is the gate, not the review"],
+  ["npm run verify", "last: it is the gate, not the review — the repo's own check, not a slash command"],
 ];
 
 export function review(options: ReviewOptions): number {

@@ -133,7 +133,18 @@ await runHook(
       });
     }
 
-    return proceed({ suppressOutput: true, statusMessage: "checks passed" });
+    // "checks passed" is a claim, and it was being made for three different
+    // outcomes: the gates ran clean, a rule crashed, and a repo-local rule was
+    // never approved to run. A pack author iterating inside Claude Code saw
+    // those two identical words on every save and had no way to tell their rule
+    // was dead. Nothing blocks here either way — the edit proceeds — but the
+    // status line says which of the three actually happened.
+    return proceed({
+      suppressOutput: true,
+      statusMessage: gates.health.complete
+        ? "checks passed"
+        : `checks incomplete — ${gates.health.detail || "a gate did not run"}`,
+    });
   },
   { budgetMs: 600 },
 );

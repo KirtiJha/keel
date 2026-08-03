@@ -409,7 +409,11 @@ describe("gate 3 — observed RED", () => {
     expect(outcome.violations).toHaveLength(1);
     expect(outcome.violations[0]?.message).toContain("newThing");
     expect(outcome.violations[0]?.fix).toContain("src/a.test.ts");
-    expect(outcome.violations[0]?.fix).toContain("--spike");
+    // The escape hatch is an environment variable, not a flag. The message
+    // used to name `--spike`, which is not a flag on any command and could
+    // not be passed to a hook that fires on Write/Edit anyway.
+    expect(outcome.violations[0]?.fix).toContain("KEEL_SPIKE=1");
+    expect(outcome.violations[0]?.fix).not.toContain("--spike");
   });
 
   it("tells you to write a test when none exists", () => {

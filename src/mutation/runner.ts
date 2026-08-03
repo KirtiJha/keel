@@ -119,7 +119,11 @@ export async function runMutation(options: RunOptions): Promise<MutationReport> 
   const unresolved: string[] = [];
   const command = resolveTestCommand(root, config);
   if (command === null) {
-    return empty(
+    // Not "nothing to mutate" — that is a docs or config change and passes
+    // honestly. This is "the instrument is broken", and reporting score 1 for
+    // it meant a repo whose test script got renamed would post a perfect
+    // mutation score, forever, in the one job standing in for coverage.
+    return failed(
       "no test command detected — set `mutation.test_command` in keel.config.yaml",
       "",
     );

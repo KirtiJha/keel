@@ -130,7 +130,25 @@ const bool = (v: unknown): boolean => v === true;
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T =>
   typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
 
-const GATE_RESULTS: readonly GateResultKind[] = ["pass", "fail", "warn", "error"];
+/**
+ * Every member of `GateResultKind`, and the compile-time check that keeps it
+ * that way.
+ *
+ * Widening the type without widening this array silently rewrote `untrusted`
+ * and `skipped` to `pass` on disk — the exact misreading the type's own comment
+ * exists to prevent, reintroduced one file away from it. `readonly Kind[]`
+ * cannot catch a missing member, so the mapped-object form below does: leaving
+ * one out is a type error.
+ */
+const GATE_RESULT_SET: { readonly [K in GateResultKind]: true } = {
+  pass: true,
+  fail: true,
+  warn: true,
+  error: true,
+  untrusted: true,
+  skipped: true,
+};
+const GATE_RESULTS = Object.keys(GATE_RESULT_SET) as readonly GateResultKind[];
 const TDD_GATES: readonly TddGateName[] = [
   "test-weakening",
   "mock-under-test",

@@ -23,6 +23,12 @@ export interface DetectedCommands {
   readonly lint?: string;
   readonly typecheck?: string;
   readonly run?: string;
+  /**
+   * A polyglot repo has two commands for one role. The one that did not win the
+   * bare key survives here as `<role>:python`, so neither language's suite goes
+   * unmentioned. See `displace` below for why that matters.
+   */
+  readonly [role: string]: string | undefined;
 }
 
 interface PackageJson {
@@ -78,7 +84,7 @@ function makeTargets(root: string): Set<string> {
   }
 }
 
-function pythonCommands(root: string): DetectedCommands {
+function pythonCommands(root: string): Record<string, string> {
   const path = join(root, "pyproject.toml");
   if (!isFile(path)) return {};
   let text: string;
@@ -114,10 +120,29 @@ export function detectCommands(root: string): DetectedCommands {
 
   const out: Record<string, string> = { ...python };
 
+  /**
+   * A polyglot repo has two commands for one role, and this map is keyed by
+   * role. It used to spread the Python commands and then let the npm scripts
+   * overwrite them, so a TypeScript + Python repo produced a CLAUDE.md listing
+   * only `npm test` — and the model would run it, see it pass, and report a
+   * green suite having executed no Python tests at all. The config sitting
+   * beside it said `languages: [typescript, python]`, which made the omission
+   * read as deliberate.
+   *
+   * Both survive now: the displaced one keeps the role under a suffixed key,
+   * and CLAUDE.md renders it as its own line. Whichever language "wins" the
+   * bare key is a presentation detail; losing one entirely was not.
+   */
+  const displace = (key: string, incoming: string): void => {
+    const existing = out[key];
+    if (existing !== undefined && existing !== incoming) out[`${key}:python`] = existing;
+    out[key] = incoming;
+  };
+
   const fromScripts = (key: string, candidates: readonly string[]): void => {
     for (const candidate of candidates) {
       if (typeof scripts[candidate] === "string") {
-        out[key] = nodeCommand(runner, candidate);
+        displace(key, nodeCommand(runner, candidate));
         return;
       }
     }
@@ -140,7 +165,7 @@ export function detectCommands(root: string): DetectedCommands {
     ["install", "install"],
     ["run", "run"],
   ] as const) {
-    if (targets.has(target)) out[key] = `make ${target}`;
+    if (targets.has(target)) displace(key, `make ${target}`);
   }
 
   return out;

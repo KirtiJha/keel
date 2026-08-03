@@ -26,7 +26,7 @@ export const BEGIN_MARKER = "<!-- keel:begin -->";
 export const END_MARKER = "<!-- keel:end -->";
 export const MAX_MANAGED_LINES = 60;
 
-const COMMAND_LABELS: ReadonlyArray<readonly [keyof ReturnType<typeof detectCommands>, string]> = [
+const COMMAND_LABELS: ReadonlyArray<readonly [string, string]> = [
   ["install", "install"],
   ["build", "build"],
   ["test", "test"],
@@ -34,6 +34,14 @@ const COMMAND_LABELS: ReadonlyArray<readonly [keyof ReturnType<typeof detectComm
   ["typecheck", "typecheck"],
   ["run", "run locally"],
 ];
+
+/**
+ * In a polyglot repo one role has two commands. `detectCommands` keeps the
+ * displaced one under `<role>:python`; naming the language matters, because an
+ * unlabelled second `test:` line reads like a typo rather than the other half
+ * of the suite.
+ */
+const PYTHON_SUFFIX = ":python";
 
 export interface GenerateOptions {
   readonly root: string;
@@ -65,6 +73,8 @@ export function generateManagedBlock(options: GenerateOptions): string {
     lines.push("");
     for (const [key, label] of present) {
       lines.push(`- ${label}: \`${commands[key] ?? ""}\``);
+      const alsoPython = commands[`${key}${PYTHON_SUFFIX}`];
+      if (alsoPython !== undefined) lines.push(`- ${label} (python): \`${alsoPython}\``);
     }
     lines.push("");
   }

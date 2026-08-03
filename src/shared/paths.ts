@@ -179,12 +179,35 @@ export function resolveConfiguredPath(
     return { path: resolve(root, configured), ok: true, error: null };
   }
 
-  // A fallback is a Keel constant, so this only fires if one is ever mistyped —
-  // and the repo root is the one path that cannot escape the repo.
-  const safe = escapesRepo(root, fallback) ? resolve(root) : resolve(root, fallback);
+  // The fallback is a Keel constant, so it normally resolves cleanly. But it is
+  // a *relative* constant, and a repository can make it escape: committing
+  // `standards` as a symlink to somewhere outside makes the default value fail
+  // the same check the configured value just failed.
+  //
+  // Falling back to the repo root there was far worse than doing nothing. For
+  // `standards.dirs` it made the entire repository a pack search root — `keel
+  // check` started offering `.git`, `.keel` and `src` as candidate pack dirs —
+  // and, because the walk then descended through the very symlink that caused
+  // the problem, an out-of-tree `guide.md` reached the model anyway. The escape
+  // was closed at the front door and left open at the back.
+  //
+  // So when both escape there is no usable path, and we say so with one that
+  // exists nowhere: inside `.keel/`, guaranteed empty, so a caller that ignores
+  // `ok: false` still reads nothing and writes nothing of consequence.
+  if (escapesRepo(root, fallback)) {
+    return {
+      path: join(keelDir(root), "unusable", key.replace(/[^a-z0-9]+/gi, "-")),
+      ok: false,
+      error:
+        `${key}: "${configured}" resolves outside the repository, and the default ` +
+        `"${fallback}" does too — usually because "${fallback}" is a symlink pointing ` +
+        `out of the repo. Nothing was read from either. ` +
+        `Fix: remove the symlink, then set ${key} to a real repo-relative directory.`,
+    };
+  }
 
   return {
-    path: safe,
+    path: resolve(root, fallback),
     ok: false,
     error:
       `${key}: "${configured}" resolves outside the repository and has been ignored — ` +

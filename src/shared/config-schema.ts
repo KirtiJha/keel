@@ -42,24 +42,24 @@ export const LanguageSchema = z.enum(LANGUAGES);
 export const TrackSchema = z.enum(["quick", "standard", "full"]);
 
 export const KeelConfigSchema = z
-  .object({
+  .strictObject({
     version: z.literal(1),
 
-    repo: z.object({
+    repo: z.strictObject({
       name: z.string().min(1, "repo.name must not be empty"),
       languages: z.array(LanguageSchema).min(1, "declare at least one language"),
     }),
 
     tracks: z
-      .object({
-        quick: z.object({ effort: EffortSchema.default("low") }).default({ effort: "low" }),
-        standard: z.object({ effort: EffortSchema.default("medium") }).default({ effort: "medium" }),
-        full: z.object({ effort: EffortSchema.default("high") }).default({ effort: "high" }),
+      .strictObject({
+        quick: z.strictObject({ effort: EffortSchema.default("low") }).default({ effort: "low" }),
+        standard: z.strictObject({ effort: EffortSchema.default("medium") }).default({ effort: "medium" }),
+        full: z.strictObject({ effort: EffortSchema.default("high") }).default({ effort: "high" }),
       })
       .default({ quick: { effort: "low" }, standard: { effort: "medium" }, full: { effort: "high" } }),
 
     router: z
-      .object({
+      .strictObject({
         force_full_globs: GlobList.default([]),
         quick_max_files: z.number().int().min(1).default(1),
         quick_max_lines: z.number().int().min(1).default(50),
@@ -79,7 +79,7 @@ export const KeelConfigSchema = z
       }),
 
     standards: z
-      .object({
+      .strictObject({
         packs_ref: z.string().min(1).default(DEFAULT_PACKS_REF),
         disabled: z.array(z.string().min(1)).default([]),
         dirs: z.array(z.string().min(1)).default([...DEFAULT_PACK_DIRS]),
@@ -87,7 +87,7 @@ export const KeelConfigSchema = z
       .default({ packs_ref: DEFAULT_PACKS_REF, disabled: [], dirs: [...DEFAULT_PACK_DIRS] }),
 
     tdd: z
-      .object({
+      .strictObject({
         enabled: z.boolean().default(true),
         outer_loop: z.boolean().default(false),
         exempt_globs: GlobList.default([...DEFAULT_EXEMPT_GLOBS]),
@@ -101,28 +101,28 @@ export const KeelConfigSchema = z
       }),
 
     telemetry: z
-      .object({
+      .strictObject({
         sink: z.enum(TELEMETRY_SINKS).default("file"),
         path: z.string().min(1).default(DEFAULT_TELEMETRY_PATH),
       })
       .default({ sink: "file", path: DEFAULT_TELEMETRY_PATH }),
 
     upstream: z
-      .object({
+      .strictObject({
         enabled_skills: z.array(z.string().min(1)).default([...DEFAULT_ENABLED_SKILLS]),
         disabled_skills: z.array(z.string().min(1)).default([]),
       })
       .default({ enabled_skills: [...DEFAULT_ENABLED_SKILLS], disabled_skills: [] }),
 
     display: z
-      .object({
+      .strictObject({
         enabled: z.boolean().default(true),
         budget_ms: z.number().int().min(10).max(5000).default(100),
       })
       .default({ enabled: true, budget_ms: 100 }),
 
     spec: z
-      .object({
+      .strictObject({
         dir: z.string().min(1).default(DEFAULT_SPEC_DIR),
         max_lines: z.number().int().min(1).default(DEFAULT_SPEC_MAX_LINES),
         ears: z.boolean().default(false),
@@ -136,7 +136,7 @@ export const KeelConfigSchema = z
       }),
 
     mutation: z
-      .object({
+      .strictObject({
         enabled: z.boolean().default(true),
         min_score: z.number().min(0).max(1).default(DEFAULT_MUTATION_MIN_SCORE),
         max_mutants: z.number().int().min(1).default(DEFAULT_MUTATION_MAX_MUTANTS),
